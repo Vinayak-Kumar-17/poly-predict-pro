@@ -475,294 +475,294 @@ if app_mode == "📈 Stock Analysis":
     
     predictive_tab, seasonality_tab = st.tabs(["🔮 Predictive Insights", "📅 Seasonality Analysis"])
     with predictive_tab:
-    if df is not None:
-        st.subheader("📊 Data Preview")
-        st.dataframe(df.head(10), use_container_width=True)
-        
-        if x_col in df.columns and y_col in df.columns:
-            with st.spinner("Processing data..."):
-                clean_df, is_x_date, base_date = process_data(df, x_col, y_col, use_log=use_log)
+        if df is not None:
+            st.subheader("📊 Data Preview")
+            st.dataframe(df.head(10), use_container_width=True)
             
-            # Explicitly ensure they are floats for the engine
-            X = clean_df['x_val'].astype(float).values
-            y = clean_df['y_val'].astype(float).values
-            
-            if len(X) < 2:
-                st.error("Error: Not enough valid numeric data points for regression after cleaning.")
-                st.stop()
+            if x_col in df.columns and y_col in df.columns:
+                with st.spinner("Processing data..."):
+                    clean_df, is_x_date, base_date = process_data(df, x_col, y_col, use_log=use_log)
                 
-            # Initialize and train Engine (Cached)
-            with st.spinner("Training Model..."):
-                engine = train_model(X, y, auto_degree, manual_degree, alpha=alpha)
-            
-            y_pred_numeric = engine.predict(X)
-            
-            # Inverse transform for metrics if in log mode
-            y_actual_display = y
-            y_pred_display = y_pred_numeric
-            if use_log:
-                y_actual_display = np.exp(y)
-                y_pred_display = np.exp(y_pred_numeric)
+                # Explicitly ensure they are floats for the engine
+                X = clean_df['x_val'].astype(float).values
+                y = clean_df['y_val'].astype(float).values
                 
-            stats = StatsEngine.compute_all(y_actual_display, y_pred_display, X.reshape(-1, 1))
-            
-            # Metrics Row
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("R² Score", f"{stats['r2']:.4f}")
-            col2.metric("Adj. R²", f"{stats['adj_r2']:.4f}")
-            col3.metric("MSE", f"{stats['mse']:.4f}")
-            col4.metric("RMSE", f"{stats['rmse']:.4f}")
-            
-            # Visualization
-            st.subheader("📈 Regression Analysis")
-            
-            # Create regression line data
-            min_x, max_x = float(np.min(X)), float(np.max(X))
-            line_x, line_y_numeric = engine.get_line_data(min_x, max_x)
-            
-            # Inverse transform for line if in log mode
-            line_y = line_y_numeric
-            if use_log:
-                line_y = np.exp(line_y_numeric).tolist()
-            else:
-                line_y = np.maximum(0, line_y).tolist()
-
-            # Mapping numeric X back to dates for visualization if needed
-            X_plot = X
-            line_x_plot = line_x
-            if is_x_date:
-                X_plot = [base_date + pd.Timedelta(days=int(d)) for d in X]
-                line_x_plot = [base_date + pd.Timedelta(days=int(d)) for d in line_x]
-
-            fig = go.Figure()
-            
-            # Scatter for original data
-            fig.add_trace(go.Scatter(
-                x=X_plot, y=y_actual_display, 
-                mode='markers', 
-                name='Original Data',
-                marker=dict(color='#00bcd4', size=8, opacity=0.6)
-            ))
-            
-            # Line for regression
-            fig.add_trace(go.Scatter(
-                x=line_x_plot, y=line_y, 
-                mode='lines', 
-                name=f'Fit (Degree {engine.degree})',
-                line=dict(color='#ff4081', width=3)
-            ))
-            
-            fig.update_layout(
-                template="plotly_dark",
-                xaxis_title=x_col if not is_x_date else f"{x_col} (Time Series)",
-                yaxis_title=y_col,
-                height=600,
-                hovermode="x unified",
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Prediction Tool
-            st.markdown("---")
-            st.subheader("🔮 Predictive Insights")
-            predict_col1, predict_col2 = st.columns([1, 2])
-            
-            with predict_col1:
-                if is_x_date:
-                    # Use date input for prediction
-                    last_date = base_date + pd.Timedelta(days=int(X.max()))
-                    target_date = st.date_input("Select Date for Prediction", value=last_date + pd.Timedelta(days=365))
-                    input_val = (pd.to_datetime(target_date) - base_date).days
-                else:
-                    input_val = st.number_input(f"Enter {x_col} to predict", value=float(max_x + (max_x - min_x) * 0.1))
-                
-                if st.button("Predict Future Value"):
-                    pred_numeric = engine.predict(np.array([[input_val]]))[0]
-                    pred = np.exp(pred_numeric) if use_log else max(0, pred_numeric)
+                if len(X) < 2:
+                    st.error("Error: Not enough valid numeric data points for regression after cleaning.")
+                    st.stop()
                     
-                    if is_x_date:
-                        st.success(f"Predicted **{y_col}** for {target_date}: `{pred:.4f}`")
-                    else:
-                        st.success(f"Predicted **{y_col}** for {input_val}: `{pred:.4f}`")
-            
-            with predict_col2:
-                st.info("The model uses Ridge Regression for stability. 'Financial Mode' ensures stock prices remain positive during extrapolation.")
-
-        else:
-            st.warning(f"Waiting for valid columns: '{x_col}' and '{y_col}'. You can adjust them in the sidebar.")
-    else:
-        st.info("👋 Welcome! Please select a data source in the sidebar to get started.")
-
-with seasonality_tab:
-    if data_mode == "Stock Market" and raw_data is not None:
-        st.subheader(f"📅 Seasonality Analysis: {focal_ticker}")
-        
-        # New signature with cagr_monthly
-        heatmap_df, month_stats, raw_returns, outliers, cagr_monthly = calculate_seasonality_stats(raw_data, focal_ticker)
-        
-        # Win-Rate & Volatility Row
-        st.markdown("### 📊 Performance Summary")
-        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-        
-        # Find best/worst month
-        best_month = month_stats['Mean'].idxmax()
-        worst_month = month_stats['Mean'].idxmin()
-        best_winrate = month_stats['Win_Rate'].idxmax()
-        
-        # Combined Arithmetic and Compounded Metric
-        m_col1.metric("Avg. Monthly Return", f"{month_stats['Mean'].mean():.2f}%", help="Arithmetic Mean: Simple average of monthly swings.")
-        m_col1.markdown(f"**Compounded (CAGR):** `{cagr_monthly:.2f}%` 💎", help="Geometric Mean: The true growth rate your wealth feels after accounting for volatility drag.")
-        
-        m_col2.metric("Best Month (Avg)", f"{calendar.month_name[best_month]}", f"{month_stats.loc[best_month, 'Mean']:.2f}%")
-        m_col3.metric("Worst Month (Avg)", f"{calendar.month_name[worst_month]}", f"{month_stats.loc[worst_month, 'Mean']:.2f}%", delta_color="inverse")
-        m_col4.metric("Highest Win-Rate", f"{calendar.month_name[best_winrate]}", f"{month_stats.loc[best_winrate, 'Win_Rate']:.1f}%")
-        
-        st.info("💡 **Why two averages?** Arithmetic Mean shows the average monthly swing. **Compounded (CAGR)** shows the real rate of growth. If a stock is highly volatile (like SBIN), the Arithmetic Mean is usually higher, but the CAGR is what actually builds wealth.")
-        
-        # --- RED FLAG DETECTION SYSTEM ---
-        st.markdown("---")
-        st.markdown("#### 🚩 Reliability Insights & Red Flags")
-        
-        flagged_months = month_stats[abs(month_stats['Mean'] - month_stats['Median']) > 2.5]
-        
-        if not flagged_months.empty or not outliers.empty:
-            for idx, row in flagged_months.iterrows():
-                m_name = calendar.month_name[idx]
-                st.warning(f"""
-                **⚠️ Reliability Warning: {m_name}**
-                * **Skew Detected:** Average return is `{row['Mean']:.2f}%` but Median is only `{row['Median']:.2f}%`.
-                * **Reason:** This month's average is likely inflated/deflated by a specific outlier year.
-                * **Recommendation:** Look at Win Rate (**{row['Win_Rate']:.1f}%**) for a truer picture of consistency.
-                """)
-            
-            if not outliers.empty:
-                with st.expander("🔍 View Specific Outliers (Historical Anomalies)"):
-                    st.write("These specific months had returns more than 2.5 standard deviations from the mean:")
-                    st.dataframe(outliers[['Date', 'Return', 'Z_Score']].sort_values(by='Z_Score', ascending=False), use_container_width=True)
-        else:
-            st.success("✅ Seasonal patterns appear statistically consistent. (Low divergence between Mean and Median)")
-
-        # --- OPTION 4: PERFORMANCE BREAKDOWN TABLE ---
-        st.markdown("---")
-        st.markdown("#### 📋 Month-by-Month Reliability Breakdown")
-        
-        breakdown_df = month_stats.copy()
-        breakdown_df['Reliability_Stars'] = breakdown_df['Reliability'].apply(lambda x: "⭐" * int(x) if x > 0 else "⚠️")
-        
-        # Presentation formatting
-        disp_df = breakdown_df[['Month_Name', 'Mean', 'Median', 'Win_Rate', 'Volatility', 'Reliability_Stars']].copy()
-        disp_df.columns = ['Month', 'Avg Return %', 'Median %', 'Win Rate %', 'Volatility %', 'Reliability']
-        
-        st.dataframe(
-            disp_df.style.background_gradient(subset=['Avg Return %'], cmap='RdYlGn')
-            .format({
-                'Avg Return %': '{:.2f}',
-                'Median %': '{:.2f}',
-                'Win Rate %': '{:.1f}',
-                'Volatility %': '{:.2f}'
-            }),
-            use_container_width=True
-        )
-        
-        st.caption("**Legend:** ⭐⭐⭐⭐⭐ = Highly reliable | ⚠️ = Highly Skewed / Low History")
-
-        # Rolling Window Comparison
-        st.markdown("---")
-        st.markdown("### 🕒 Pattern Evolution (Rolling Windows)")
-        
-        if len(raw_returns['Year'].unique()) > 3:
-            recent_3y = raw_returns[raw_returns['Year'] >= raw_returns['Year'].max() - 2]
-            r3y_stats = recent_3y.groupby('Month')['Return'].mean()
-            
-            comparison_df = pd.DataFrame({
-                'Month': [calendar.month_name[i] for i in range(1, 13)],
-                'Full History Avg (%)': [month_stats.loc[i, 'Mean'] for i in range(1, 13)],
-                'Recent 3Y Avg (%)': [r3y_stats.get(i, np.nan) for i in range(1, 13)]
-            })
-            comparison_df['Shift (%)'] = comparison_df['Recent 3Y Avg (%)'] - comparison_df['Full History Avg (%)']
-            
-            st.dataframe(comparison_df.style.background_gradient(subset=['Shift (%)'], cmap='RdYlGn'), use_container_width=True)
-            st.info("💡 A positive 'Shift' means the month is performing better in the last 3 years compared to its long-term history.")
-        else:
-            st.info("Not enough history for Rolling Comparison (requires >3 years of data).")
-
-        # Visuals
-        st.markdown("---")
-        chart_col1, chart_col2 = st.columns([2, 1])
-        
-        with chart_col1:
-            st.markdown("#### 🌡️ Monthly Return Heatmap (%)")
-            fig_heat = px.imshow(
-                heatmap_df,
-                labels=dict(x="Month", y="Year", color="Return %"),
-                x=heatmap_df.columns,
-                y=heatmap_df.index,
-                color_continuous_scale="RdYlGn",
-                aspect="auto",
-                text_auto=".1f"
-            )
-            fig_heat.update_layout(template="plotly_dark", height=500)
-            st.plotly_chart(fig_heat, use_container_width=True)
-            
-        with chart_col2:
-            st.markdown("#### 📦 Return Distribution")
-            fig_box = px.box(
-                raw_returns,
-                x="Month_Name",
-                y="Return",
-                points="all",
-                color="Month_Name",
-                category_orders={"Month_Name": [calendar.month_name[i] for i in range(1, 13)]}
-            )
-            fig_box.update_layout(template="plotly_dark", showlegend=False, height=500, xaxis_title="")
-            st.plotly_chart(fig_box, use_container_width=True)
-            
-        # Rolling & Multi-Stock Logic
-        st.markdown("---")
-        st.markdown("### 🔍 Advanced Insights")
-        adv_col1, adv_col2 = st.columns(2)
-        
-        with adv_col1:
-            # Volatility is now a bar chart but we can use our new stats
-            st.markdown("#### 📉 Risk Level (Volatility) per Month")
-            fig_vol = px.bar(
-                month_stats.reset_index(),
-                x="Month_Name",
-                y="Volatility",
-                color="Volatility",
-                color_continuous_scale="Purples",
-                category_orders={"Month_Name": [calendar.month_name[i] for i in range(1, 13)]}
-            )
-            fig_vol.update_layout(template="plotly_dark", height=400, xaxis_title="")
-            st.plotly_chart(fig_vol, use_container_width=True)
-            
-        with adv_col2:
-             if len(tickers_list) > 1:
-                st.markdown("#### 🛰️ Multi-Stock Correlation")
-                # Calculate correlation of daily returns for the selected period
-                corr_df = raw_data['Close'].pct_change().corr()
-                fig_corr = px.imshow(
-                    corr_df,
-                    text_auto=".2f",
-                    color_continuous_scale="Viridis",
-                    aspect="auto"
-                )
-                fig_corr.update_layout(template="plotly_dark", height=400)
-                st.plotly_chart(fig_corr, use_container_width=True)
-             else:
-                st.info("Add more tickers in the sidebar to see the Correlation Matrix.")
+                # Initialize and train Engine (Cached)
+                with st.spinner("Training Model..."):
+                    engine = train_model(X, y, auto_degree, manual_degree, alpha=alpha)
                 
-        # Export logic
-        st.markdown("---")
-        csv_data = month_stats.to_csv().encode('utf-8')
-        st.download_button(
-            label="📥 Download Seasonality CSV Report",
-            data=csv_data,
-            file_name=f"{focal_ticker}_seasonality.csv",
-            mime="text/csv",
-        )
+                y_pred_numeric = engine.predict(X)
+                
+                # Inverse transform for metrics if in log mode
+                y_actual_display = y
+                y_pred_display = y_pred_numeric
+                if use_log:
+                    y_actual_display = np.exp(y)
+                    y_pred_display = np.exp(y_pred_numeric)
+                    
+                stats = StatsEngine.compute_all(y_actual_display, y_pred_display, X.reshape(-1, 1))
+                
+                # Metrics Row
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("R² Score", f"{stats['r2']:.4f}")
+                col2.metric("Adj. R²", f"{stats['adj_r2']:.4f}")
+                col3.metric("MSE", f"{stats['mse']:.4f}")
+                col4.metric("RMSE", f"{stats['rmse']:.4f}")
+                
+                # Visualization
+                st.subheader("📈 Regression Analysis")
+                
+                # Create regression line data
+                min_x, max_x = float(np.min(X)), float(np.max(X))
+                line_x, line_y_numeric = engine.get_line_data(min_x, max_x)
+                
+                # Inverse transform for line if in log mode
+                line_y = line_y_numeric
+                if use_log:
+                    line_y = np.exp(line_y_numeric).tolist()
+                else:
+                    line_y = np.maximum(0, line_y).tolist()
+    
+                # Mapping numeric X back to dates for visualization if needed
+                X_plot = X
+                line_x_plot = line_x
+                if is_x_date:
+                    X_plot = [base_date + pd.Timedelta(days=int(d)) for d in X]
+                    line_x_plot = [base_date + pd.Timedelta(days=int(d)) for d in line_x]
+    
+                fig = go.Figure()
+                
+                # Scatter for original data
+                fig.add_trace(go.Scatter(
+                    x=X_plot, y=y_actual_display, 
+                    mode='markers', 
+                    name='Original Data',
+                    marker=dict(color='#00bcd4', size=8, opacity=0.6)
+                ))
+                
+                # Line for regression
+                fig.add_trace(go.Scatter(
+                    x=line_x_plot, y=line_y, 
+                    mode='lines', 
+                    name=f'Fit (Degree {engine.degree})',
+                    line=dict(color='#ff4081', width=3)
+                ))
+                
+                fig.update_layout(
+                    template="plotly_dark",
+                    xaxis_title=x_col if not is_x_date else f"{x_col} (Time Series)",
+                    yaxis_title=y_col,
+                    height=600,
+                    hovermode="x unified",
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Prediction Tool
+                st.markdown("---")
+                st.subheader("🔮 Predictive Insights")
+                predict_col1, predict_col2 = st.columns([1, 2])
+                
+                with predict_col1:
+                    if is_x_date:
+                        # Use date input for prediction
+                        last_date = base_date + pd.Timedelta(days=int(X.max()))
+                        target_date = st.date_input("Select Date for Prediction", value=last_date + pd.Timedelta(days=365))
+                        input_val = (pd.to_datetime(target_date) - base_date).days
+                    else:
+                        input_val = st.number_input(f"Enter {x_col} to predict", value=float(max_x + (max_x - min_x) * 0.1))
+                    
+                    if st.button("Predict Future Value"):
+                        pred_numeric = engine.predict(np.array([[input_val]]))[0]
+                        pred = np.exp(pred_numeric) if use_log else max(0, pred_numeric)
+                        
+                        if is_x_date:
+                            st.success(f"Predicted **{y_col}** for {target_date}: `{pred:.4f}`")
+                        else:
+                            st.success(f"Predicted **{y_col}** for {input_val}: `{pred:.4f}`")
+                
+                with predict_col2:
+                    st.info("The model uses Ridge Regression for stability. 'Financial Mode' ensures stock prices remain positive during extrapolation.")
+    
+            else:
+                st.warning(f"Waiting for valid columns: '{x_col}' and '{y_col}'. You can adjust them in the sidebar.")
+        else:
+            st.info("👋 Welcome! Please select a data source in the sidebar to get started.")
+
+    with seasonality_tab:
+        if data_mode == "Stock Market" and raw_data is not None:
+            st.subheader(f"📅 Seasonality Analysis: {focal_ticker}")
+            
+            # New signature with cagr_monthly
+            heatmap_df, month_stats, raw_returns, outliers, cagr_monthly = calculate_seasonality_stats(raw_data, focal_ticker)
+            
+            # Win-Rate & Volatility Row
+            st.markdown("### 📊 Performance Summary")
+            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+            
+            # Find best/worst month
+            best_month = month_stats['Mean'].idxmax()
+            worst_month = month_stats['Mean'].idxmin()
+            best_winrate = month_stats['Win_Rate'].idxmax()
+            
+            # Combined Arithmetic and Compounded Metric
+            m_col1.metric("Avg. Monthly Return", f"{month_stats['Mean'].mean():.2f}%", help="Arithmetic Mean: Simple average of monthly swings.")
+            m_col1.markdown(f"**Compounded (CAGR):** `{cagr_monthly:.2f}%` 💎", help="Geometric Mean: The true growth rate your wealth feels after accounting for volatility drag.")
+            
+            m_col2.metric("Best Month (Avg)", f"{calendar.month_name[best_month]}", f"{month_stats.loc[best_month, 'Mean']:.2f}%")
+            m_col3.metric("Worst Month (Avg)", f"{calendar.month_name[worst_month]}", f"{month_stats.loc[worst_month, 'Mean']:.2f}%", delta_color="inverse")
+            m_col4.metric("Highest Win-Rate", f"{calendar.month_name[best_winrate]}", f"{month_stats.loc[best_winrate, 'Win_Rate']:.1f}%")
+            
+            st.info("💡 **Why two averages?** Arithmetic Mean shows the average monthly swing. **Compounded (CAGR)** shows the real rate of growth. If a stock is highly volatile (like SBIN), the Arithmetic Mean is usually higher, but the CAGR is what actually builds wealth.")
+            
+            # --- RED FLAG DETECTION SYSTEM ---
+            st.markdown("---")
+            st.markdown("#### 🚩 Reliability Insights & Red Flags")
+            
+            flagged_months = month_stats[abs(month_stats['Mean'] - month_stats['Median']) > 2.5]
+            
+            if not flagged_months.empty or not outliers.empty:
+                for idx, row in flagged_months.iterrows():
+                    m_name = calendar.month_name[idx]
+                    st.warning(f"""
+                    **⚠️ Reliability Warning: {m_name}**
+                    * **Skew Detected:** Average return is `{row['Mean']:.2f}%` but Median is only `{row['Median']:.2f}%`.
+                    * **Reason:** This month's average is likely inflated/deflated by a specific outlier year.
+                    * **Recommendation:** Look at Win Rate (**{row['Win_Rate']:.1f}%**) for a truer picture of consistency.
+                    """)
+                
+                if not outliers.empty:
+                    with st.expander("🔍 View Specific Outliers (Historical Anomalies)"):
+                        st.write("These specific months had returns more than 2.5 standard deviations from the mean:")
+                        st.dataframe(outliers[['Date', 'Return', 'Z_Score']].sort_values(by='Z_Score', ascending=False), use_container_width=True)
+            else:
+                st.success("✅ Seasonal patterns appear statistically consistent. (Low divergence between Mean and Median)")
+    
+            # --- OPTION 4: PERFORMANCE BREAKDOWN TABLE ---
+            st.markdown("---")
+            st.markdown("#### 📋 Month-by-Month Reliability Breakdown")
+            
+            breakdown_df = month_stats.copy()
+            breakdown_df['Reliability_Stars'] = breakdown_df['Reliability'].apply(lambda x: "⭐" * int(x) if x > 0 else "⚠️")
+            
+            # Presentation formatting
+            disp_df = breakdown_df[['Month_Name', 'Mean', 'Median', 'Win_Rate', 'Volatility', 'Reliability_Stars']].copy()
+            disp_df.columns = ['Month', 'Avg Return %', 'Median %', 'Win Rate %', 'Volatility %', 'Reliability']
+            
+            st.dataframe(
+                disp_df.style.background_gradient(subset=['Avg Return %'], cmap='RdYlGn')
+                .format({
+                    'Avg Return %': '{:.2f}',
+                    'Median %': '{:.2f}',
+                    'Win Rate %': '{:.1f}',
+                    'Volatility %': '{:.2f}'
+                }),
+                use_container_width=True
+            )
+            
+            st.caption("**Legend:** ⭐⭐⭐⭐⭐ = Highly reliable | ⚠️ = Highly Skewed / Low History")
+    
+            # Rolling Window Comparison
+            st.markdown("---")
+            st.markdown("### 🕒 Pattern Evolution (Rolling Windows)")
+            
+            if len(raw_returns['Year'].unique()) > 3:
+                recent_3y = raw_returns[raw_returns['Year'] >= raw_returns['Year'].max() - 2]
+                r3y_stats = recent_3y.groupby('Month')['Return'].mean()
+                
+                comparison_df = pd.DataFrame({
+                    'Month': [calendar.month_name[i] for i in range(1, 13)],
+                    'Full History Avg (%)': [month_stats.loc[i, 'Mean'] for i in range(1, 13)],
+                    'Recent 3Y Avg (%)': [r3y_stats.get(i, np.nan) for i in range(1, 13)]
+                })
+                comparison_df['Shift (%)'] = comparison_df['Recent 3Y Avg (%)'] - comparison_df['Full History Avg (%)']
+                
+                st.dataframe(comparison_df.style.background_gradient(subset=['Shift (%)'], cmap='RdYlGn'), use_container_width=True)
+                st.info("💡 A positive 'Shift' means the month is performing better in the last 3 years compared to its long-term history.")
+            else:
+                st.info("Not enough history for Rolling Comparison (requires >3 years of data).")
+    
+            # Visuals
+            st.markdown("---")
+            chart_col1, chart_col2 = st.columns([2, 1])
+            
+            with chart_col1:
+                st.markdown("#### 🌡️ Monthly Return Heatmap (%)")
+                fig_heat = px.imshow(
+                    heatmap_df,
+                    labels=dict(x="Month", y="Year", color="Return %"),
+                    x=heatmap_df.columns,
+                    y=heatmap_df.index,
+                    color_continuous_scale="RdYlGn",
+                    aspect="auto",
+                    text_auto=".1f"
+                )
+                fig_heat.update_layout(template="plotly_dark", height=500)
+                st.plotly_chart(fig_heat, use_container_width=True)
+                
+            with chart_col2:
+                st.markdown("#### 📦 Return Distribution")
+                fig_box = px.box(
+                    raw_returns,
+                    x="Month_Name",
+                    y="Return",
+                    points="all",
+                    color="Month_Name",
+                    category_orders={"Month_Name": [calendar.month_name[i] for i in range(1, 13)]}
+                )
+                fig_box.update_layout(template="plotly_dark", showlegend=False, height=500, xaxis_title="")
+                st.plotly_chart(fig_box, use_container_width=True)
+                
+            # Rolling & Multi-Stock Logic
+            st.markdown("---")
+            st.markdown("### 🔍 Advanced Insights")
+            adv_col1, adv_col2 = st.columns(2)
+            
+            with adv_col1:
+                # Volatility is now a bar chart but we can use our new stats
+                st.markdown("#### 📉 Risk Level (Volatility) per Month")
+                fig_vol = px.bar(
+                    month_stats.reset_index(),
+                    x="Month_Name",
+                    y="Volatility",
+                    color="Volatility",
+                    color_continuous_scale="Purples",
+                    category_orders={"Month_Name": [calendar.month_name[i] for i in range(1, 13)]}
+                )
+                fig_vol.update_layout(template="plotly_dark", height=400, xaxis_title="")
+                st.plotly_chart(fig_vol, use_container_width=True)
+                
+            with adv_col2:
+                 if len(tickers_list) > 1:
+                    st.markdown("#### 🛰️ Multi-Stock Correlation")
+                    # Calculate correlation of daily returns for the selected period
+                    corr_df = raw_data['Close'].pct_change().corr()
+                    fig_corr = px.imshow(
+                        corr_df,
+                        text_auto=".2f",
+                        color_continuous_scale="Viridis",
+                        aspect="auto"
+                    )
+                    fig_corr.update_layout(template="plotly_dark", height=400)
+                    st.plotly_chart(fig_corr, use_container_width=True)
+                 else:
+                    st.info("Add more tickers in the sidebar to see the Correlation Matrix.")
+                    
+            # Export logic
+            st.markdown("---")
+            csv_data = month_stats.to_csv().encode('utf-8')
+            st.download_button(
+                label="📥 Download Seasonality CSV Report",
+                data=csv_data,
+                file_name=f"{focal_ticker}_seasonality.csv",
+                mime="text/csv",
+            )
 
 elif app_mode == "🔍 Market Screener":
     st.title("🔍 Smart Stock Screener")
@@ -929,3 +929,13 @@ elif app_mode == "🔍 Market Screener":
             )
     else:
         st.info("Click the button above to start the multi-year seasonal analysis for Nifty 50 stocks.")
+
+elif app_mode == "🤖 Trading Hub (Upcoming)":
+    st.title("🤖 Trading Hub")
+    st.info("The Trading Hub is coming soon! This section will feature AI-driven strategy execution and live portfolio tracking.")
+    st.markdown("""
+    ### 🚧 Features in Development:
+    *   **Direct Broker Integration**: Execute trades directly from PolyPredict insights.
+    *   **Backtesting Suite**: Test your custom seasonal strategies against 20 years of data.
+    *   **Risk Management AI**: Dynamic position sizing based on market volatility.
+    """)
