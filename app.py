@@ -77,14 +77,36 @@ if data_source is not None:
     st.dataframe(df.head(10), use_container_width=True)
     
     if x_col in df.columns and y_col in df.columns:
-        X = df[x_col].values
-        y = df[y_col].values
+        # Robust data cleaning
+        temp_df = df[[x_col, y_col]].copy()
+        
+        # Handle X column (potentially dates)
+        is_x_date = False
+        try:
+            # Try to convert to datetime
+            temp_df[x_col] = pd.to_datetime(temp_df[x_col])
+            is_x_date = True
+            # Convert to ordinal for regression (numeric)
+            base_date = temp_df[x_col].min()
+            X_numeric = (temp_df[x_col] - base_date).dt.days.values
+        except:
+            # Fallback to standard numeric conversion
+            temp_df[x_col] = pd.to_numeric(temp_df[x_col], errors='coerce')
+            X_numeric = temp_df[x_col].values
+            
+        # Handle Y column (must be numeric)
+        temp_df[y_col] = pd.to_numeric(temp_df[y_col], errors='coerce')
+        y_numeric = temp_df[y_col].values
         
         # Filter NaN values
-        mask = ~np.isnan(X) & ~np.isnan(y)
-        X = X[mask]
-        y = y[mask]
+        mask = ~np.isnan(X_numeric) & ~np.isnan(y_numeric)
+        X = X_numeric[mask]
+        y = y_numeric[mask]
         
+        if len(X) < 2:
+            st.error("Error: Not enough valid numeric data points for regression.")
+            st.stop()
+            
         # Initialize Engine
         engine = RegressionEngine(degree=manual_degree if not auto_degree else 2)
         
@@ -111,11 +133,18 @@ if data_source is not None:
         min_x, max_x = float(np.min(X)), float(np.max(X))
         line_x, line_y = engine.get_line_data(min_x, max_x)
         
+        # Mapping numeric X back to dates for visualization if needed
+        X_plot = X
+        line_x_plot = line_x
+        if is_x_date:
+            X_plot = [base_date + pd.Timedelta(days=int(d)) for d in X]
+            line_x_plot = [base_date + pd.Timedelta(days=int(d)) for d in line_x]
+
         fig = go.Figure()
         
         # Scatter for original data
         fig.add_trace(go.Scatter(
-            x=X, y=y, 
+            x=X_plot, y=y, 
             mode='markers', 
             name='Original Data',
             marker=dict(color='#00bcd4', size=8, opacity=0.6)
@@ -123,7 +152,7 @@ if data_source is not None:
         
         # Line for regression
         fig.add_trace(go.Scatter(
-            x=line_x, y=line_y, 
+            x=line_x_plot, y=line_y, 
             mode='lines', 
             name=f'Fit (Degree {engine.degree})',
             line=dict(color='#ff4081', width=3)
@@ -131,7 +160,7 @@ if data_source is not None:
         
         fig.update_layout(
             template="plotly_dark",
-            xaxis_title=x_col,
+            xaxis_title=x_col if not is_x_date else f"{x_col} (Time Series)",
             yaxis_title=y_col,
             height=600,
             hovermode="x unified",
@@ -147,10 +176,20 @@ if data_source is not None:
         predict_col1, predict_col2 = st.columns([1, 2])
         
         with predict_col1:
-            input_val = st.number_input(f"Enter {x_col} to predict", value=float(max_x + (max_x - min_x) * 0.1))
+            if is_x_date:
+                # Use date input for prediction
+                last_date = base_date + pd.Timedelta(days=int(max_x))
+                target_date = st.date_input("Select Date for Prediction", value=last_date + pd.Timedelta(days=30))
+                input_val = (pd.to_datetime(target_date) - base_date).days
+            else:
+                input_val = st.number_input(f"Enter {x_col} to predict", value=float(max_x + (max_x - min_x) * 0.1))
+            
             if st.button("Predict Future Value"):
                 pred = engine.predict(np.array([[input_val]]))[0]
-                st.success(f"Predicted **{y_col}**: `{pred:.4f}`")
+                if is_x_date:
+                    st.success(f"Predicted **{y_col}** for {target_date}: `{pred:.4f}`")
+                else:
+                    st.success(f"Predicted **{y_col}** for {input_val}: `{pred:.4f}`")
         
         with predict_col2:
             st.info("Input a value to see the model's projection beyond the current dataset range. This use polynomial logic to estimate values.")
