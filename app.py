@@ -82,82 +82,122 @@ st.title("🚀 PolyPredict Pro")
 st.markdown("---")
 
 @st.cache_data
-def run_stock_screener(month_list):
-    # Fetch 10 years of data for all Nifty 50
+def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
+    """
+    Investor-Grade Screener:
+    1. Syncs with sidebar history period.
+    2. Calculates a single ROI trade for the continuous block (Feb-Apr) per year.
+    3. Handles recency vs historical comparison.
+    """
     tickers = list(NIFTY_50_TICKERS.keys())
-    # Use interval="1mo" for speed
-    data = yf.download(tickers, period="10y", interval="1mo", group_by='ticker')
+    # Use daily data for high-precision trade start/end
+    data = yf.download(tickers, period=history_period, interval="1d", group_by='ticker')
     
-    upcoming_months = month_list
+    if data.empty:
+        return pd.DataFrame()
+        
     results = []
     
-    # Reuse reliability logic
-    def get_internal_reliability(returns_group):
-        mean = returns_group.mean()
-        median = returns_group.median()
-        win_rate = (returns_group > 0).mean()
-        volatility = returns_group.std()
-        
-        score = 0
-        if win_rate >= 0.65: score += 2
-        elif win_rate >= 0.50: score += 1
-        
-        if volatility < abs(mean) and abs(mean) > 1: score += 1
-        
-        skew_factor = abs(mean - median)
-        if skew_factor < 1.0: score += 2
-        elif skew_factor < 2.5: score += 1
-        return min(5, score)
-
     for ticker in tickers:
         try:
-            # Monthly returns
-            close_data = data[ticker]['Close'].dropna()
-            returns = close_data.pct_change().dropna() * 100
-            
-            # Group by month
-            df_ret = returns.to_frame(name='Return')
-            df_ret['Month'] = df_ret.index.month
-            
-            ticker_stats = []
-            for m in upcoming_months:
-                m_returns = df_ret[df_ret['Month'] == m]['Return']
-                if len(m_returns) < 5: continue
+            # Get daily prices for this ticker
+            if isinstance(data[ticker], pd.DataFrame):
+                t_data = data[ticker].dropna(subset=['Close'])
+            else:
+                continue
                 
-                mean_ret = m_returns.mean()
-                median_ret = m_returns.median()
-                win_rate = (m_returns > 0).mean() * 100
-                rel_score = get_internal_reliability(m_returns)
+            if t_data.empty: continue
+            
+            # Group by year for Whole-Period ROI
+            years = t_data.index.year.unique()
+            annual_trades = []
+            
+            for yr in years:
+                yr_data = t_data[t_data.index.year == yr]
+                # Filter for selected months in this year
+                block_data = yr_data[yr_data.index.month.isin(month_list)]
                 
-                ticker_stats.append({
-                    'Month': m,
-                    'Ticker': ticker,
-                    'Sector': NIFTY_50_TICKERS[ticker],
-                    'Median': median_ret,
-                    'Mean': mean_ret,
-                    'Win_Rate': win_rate,
-                    'Reliability': rel_score,
-                    'Worst_Case': np.percentile(m_returns, 10),
-                    'Best_Case': np.percentile(m_returns, 90),
-                    'Outlier': abs(mean_ret - median_ret) > (1.5 * m_returns.std()) if m_returns.std() != 0 else False
+                if block_data.empty: continue
+                
+                # We need a continuous block. If months are 2,3,4, we want start of 2 to end of 4.
+                # Find start price (first day of first selected month in this year)
+                # Find end price (last day of last selected month in this year)
+                start_price = block_data['Close'].iloc[0]
+                end_price = block_data['Close'].iloc[-1]
+                roi = ((end_price / start_price) - 1) * 100
+                
+                annual_trades.append({
+                    'Year': yr,
+                    'ROI': roi,
+                    'Win': 1 if roi > 0 else 0,
+                    'Volume': block_data['Volume'].mean() if 'Volume' in block_data else 0
                 })
             
-            if ticker_stats:
-                results.append({
-                    'Ticker': ticker,
-                    'Sector': NIFTY_50_TICKERS[ticker],
-                    'Reliability': np.mean([s['Reliability'] for s in ticker_stats]),
-                    'Win_Rate': np.mean([s['Win_Rate'] for s in ticker_stats]),
-                    'Median': np.mean([s['Median'] for s in ticker_stats]),
-                    'Mean': np.mean([s['Mean'] for s in ticker_stats]),
-                    'Worst_Case': np.mean([s['Worst_Case'] for s in ticker_stats]),
-                    'Best_Case': np.mean([s['Best_Case'] for s in ticker_stats]),
-                    'Outlier': any([s['Outlier'] for s in ticker_stats])
-                })
+            if len(annual_trades) < 3: continue
+            
+            df_trades = pd.DataFrame(annual_trades)
+            total_years = len(df_trades)
+            wins = df_trades['Win'].sum()
+            win_rate = (wins / total_years) * 100
+            median_roi = df_trades['ROI'].median()
+            mean_roi = df_trades['ROI'].mean()
+            worst_case = df_trades['ROI'].min()
+            best_case = df_trades['ROI'].max()
+            avg_vol = df_trades['Volume'].mean()
+            
+            # Recency Check (Last 3 years vs History)
+            if total_years >= 5:
+                recent_df = df_trades.tail(3)
+                recent_win_rate = (recent_df['Win'].sum() / 3) * 100
+                recent_median = recent_df['ROI'].median()
+                recency_warning = recent_median < (median_roi * 0.5) or recent_win_rate < (win_rate * 0.7)
+            else:
+                recency_warning = False
+                
+            # Staleness Check (No win in last 2 available years)
+            stale = df_trades['Win'].tail(2).sum() == 0 if total_years >= 2 else False
+            
+            # Liquidity Score (1-5) based on Nifty average volume
+            # Very rough estimate for demo: > 1M is stable
+            liq_score = min(5, max(1, int(np.log10(avg_vol/10000)))) if avg_vol > 0 else 1
+            
+            # Expected Return (User requested logic)
+            expected_ret = (median_roi * 0.7) + (mean_roi * 0.3)
+            
+            # Reliability Score (Stars) based on Risk Profile
+            score = 0
+            if win_rate >= 70: score += 2
+            elif win_rate >= 55: score += 1
+            
+            if expected_ret > 2: score += 1 # Base profitability
+            
+            # Penalty for high drawdown in Conservative mode
+            if risk_profile == "Conservative":
+                if worst_case < -15: score = max(0, score - 2)
+                if win_rate < 60: score = max(0, score - 1)
+            elif risk_profile == "Aggressive":
+                if expected_ret > 8: score += 1
+            
+            results.append({
+                'Ticker': ticker,
+                'Sector': NIFTY_50_TICKERS[ticker],
+                'Expected_R': expected_ret,
+                'Median': median_roi,
+                'Mean': mean_roi,
+                'Win_Count': f"{wins}/{total_years}",
+                'Win_Rate': win_rate,
+                'Reliability': min(5, score),
+                'Worst_Case': worst_case,
+                'Best_Case': best_case,
+                'Recency_Alert': recency_warning,
+                'Stale_Alert': stale,
+                'Liquidity': liq_score,
+                'Avg_Volume': avg_vol
+            })
         except:
             continue
             
-    return pd.DataFrame(results)
+    return pd.DataFrame(results).sort_values(by='Expected_R', ascending=False)
 
 @st.cache_data
 def fetch_multi_stock_data(tickers, period):
@@ -653,19 +693,28 @@ with screener_tab:
     It ranks them using a composite **Smart Score** that balances returns, consistency, and risk.
     """)
     
-    # Month Selection UI
-    current_month_idx = datetime.now().month
-    month_options = list(calendar.month_name)[1:]
+    # Month Selection and Risk Profile UI
+    ui_col1, ui_col2 = st.columns([2, 1])
     
-    # Default to next 3 months
-    default_months = [month_options[(current_month_idx + i - 1) % 12] for i in range(1, 4)]
+    with ui_col1:
+        current_month_idx = datetime.now().month
+        month_options = list(calendar.month_name)[1:]
+        default_months = [month_options[(current_month_idx + i - 1) % 12] for i in range(1, 4)]
+        
+        selected_month_names = st.multiselect(
+            "Select Months to Analyze",
+            options=month_options,
+            default=default_months,
+            help="The screener will calculate ROI for the continuous block of these specific months."
+        )
     
-    selected_month_names = st.multiselect(
-        "Select Months to Analyze",
-        options=month_options,
-        default=default_months,
-        help="The screener will calculate performance based on the historical data for these specific months."
-    )
+    with ui_col2:
+        risk_profile = st.selectbox(
+            "Investor Risk Profile",
+            ["Conservative", "Moderate", "Aggressive"],
+            index=1,
+            help="Conservative: Penalizes drawdown >15%. Aggressive: Prioritizes high Expected Return."
+        )
     
     selected_month_indices = [month_options.index(m) + 1 for m in selected_month_names]
     
@@ -675,55 +724,69 @@ with screener_tab:
     if 'screener_months' not in st.session_state:
         st.session_state.screener_months = None
 
-    if st.button("🚀 Run Seasonal Screener (Analyzes 10Y Data)"):
+    if st.button("🚀 Run Seasonal Screener (Syncs with Sidebar Period)"):
         if not selected_month_indices:
             st.error("Please select at least one month to analyze.")
         else:
-            with st.spinner("Analyzing Nifty 50 historical patterns... This may take a minute."):
-                st.session_state.screener_res = run_stock_screener(selected_month_indices)
+            period_to_use = period if 'period' in locals() else "10y"
+            with st.spinner(f"Analyzing Nifty 50 over {period_to_use}... This may take a minute."):
+                st.session_state.screener_res = run_stock_screener(selected_month_indices, period_to_use, risk_profile)
                 st.session_state.screener_months = selected_month_names
                 
     if st.session_state.screener_res is not None:
         screener_df = st.session_state.screener_res
         st.success(f"Analysis complete for: **{', '.join(st.session_state.screener_months)}**")
         
-        # --- TABLE 1: TOP 10 BY RELIABILITY ---
-        st.markdown("### 🏆 Table 1: Top 10 Stocks by Reliability & Median")
+        # --- DIVERSIFICATION CHECK ---
+        top_10 = screener_df.head(10)
+        sector_counts = top_10['Sector'].value_counts()
+        most_common_sector = sector_counts.index[0]
+        sector_pct = (sector_counts.iloc[0] / 10) * 100
         
-        # Ranking Logic: Reliability (Stars) -> Median -> Win Rate
-        top_reliable = screener_df.sort_values(by=['Reliability', 'Median', 'Win_Rate'], ascending=False).head(10).copy()
+        if sector_pct >= 50:
+            st.warning(f"⚠️ **Diversification Alert**: {sector_pct:.0f}% of your Top 10 stocks are from the **{most_common_sector}** sector. Consider balancing your portfolio.")
+
+        # --- TABLE 1: TOP 10 BY EXPECTED RETURN ---
+        st.markdown("### 🏆 Table 1: Top 10 Stocks by Expected Return & Reliability")
+        
+        top_reliable = top_10.copy()
         top_reliable.insert(0, 'Rank', range(1, 11))
         
-        # Convert Reliability to Stars
-        top_reliable['Reliability_Stars'] = top_reliable['Reliability'].apply(lambda x: "⭐" * int(round(x)) if x >= 1 else "⚠️")
-        top_reliable['Outlier Flag'] = top_reliable['Outlier'].apply(lambda x: "🚩" if x else "✅")
+        # Format columns for display
+        top_reliable['Reliability_Stars'] = top_reliable['Reliability'].apply(lambda x: "⭐" * int(x) if x >= 1 else "⚠️")
+        top_reliable['Liquidity_Score'] = top_reliable['Liquidity'].apply(lambda x: "💧" * int(x))
+        top_reliable['Alerts'] = top_reliable.apply(
+            lambda x: ("📉 Recency" if x['Recency_Alert'] else "") + 
+                      (" | ❄️ Stale" if x['Stale_Alert'] else ""), 
+            axis=1
+        )
+        top_reliable['Alerts'] = top_reliable['Alerts'].apply(lambda x: x.strip(" | ") if x else "✅ Clear")
         
         st.dataframe(
-            top_reliable[['Rank', 'Ticker', 'Sector', 'Reliability_Stars', 'Median', 'Win_Rate', 'Worst_Case', 'Best_Case', 'Outlier Flag']]
-            .style.background_gradient(subset=['Median', 'Win_Rate'], cmap='RdYlGn')
-            .format({'Median': '{:.2f}%', 'Win_Rate': '{:.1f}%', 'Worst_Case': '{:.2f}%', 'Best_Case': '{:.2f}%'}),
+            top_reliable[['Rank', 'Ticker', 'Sector', 'Reliability_Stars', 'Expected_R', 'Win_Count', 'Median', 'Worst_Case', 'Liquidity_Score', 'Alerts']]
+            .style.background_gradient(subset=['Expected_R', 'Median', 'Worst_Case'], cmap='RdYlGn')
+            .format({'Expected_R': '{:.2f}%', 'Median': '{:.2f}%', 'Worst_Case': '{:.2f}%'}),
             use_container_width=True,
             hide_index=True
         )
-        st.caption("**Ranking Strategy:** Prioritizes consistency (Reliability) and median performance over simple averages.")
+        st.caption(f"**Ranking Strategy ({risk_profile}):** Prioritizes Expected Return ($0.7 \\times Median + 0.3 \\times Mean$) and Win probability.")
         
-        # --- TABLE 2: TOP 10 BY WIN RATE ---
-        st.markdown("### 📈 Table 2: Top 10 Stocks by Win Rate (Consistency Leaders)")
-        top_win = screener_df[screener_df['Win_Rate'] >= 60].sort_values(by=['Win_Rate', 'Reliability'], ascending=False).head(10).copy()
+        # --- TABLE 2: BACKTEST SUMMARY ---
+        st.markdown("### 📈 Table 2: High Probability Performers (Win Rate ≥ 70%)")
+        top_win = screener_df[screener_df['Win_Rate'] >= 70].sort_values(by=['Win_Rate', 'Expected_R'], ascending=False).head(10).copy()
         if not top_win.empty:
             top_win.insert(0, 'Rank', range(1, len(top_win) + 1))
-            top_win['Reliability_Stars'] = top_win['Reliability'].apply(lambda x: "⭐" * int(round(x)) if x >= 1 else "⚠️")
-            top_win['Outlier Flag'] = top_win['Outlier'].apply(lambda x: "🚩" if x else "✅")
+            top_win['Reliability_Stars'] = top_win['Reliability'].apply(lambda x: "⭐" * int(x) if x >= 1 else "⚠️")
             
             st.dataframe(
-                top_win[['Rank', 'Ticker', 'Sector', 'Win_Rate', 'Reliability_Stars', 'Median', 'Worst_Case', 'Outlier Flag']]
-                .style.background_gradient(subset=['Win_Rate', 'Median'], cmap='Greens')
-                .format({'Median': '{:.2f}%', 'Win_Rate': '{:.1f}%', 'Worst_Case': '{:.2f}%'}),
+                top_win[['Rank', 'Ticker', 'Sector', 'Win_Count', 'Expected_R', 'Reliability_Stars', 'Worst_Case']]
+                .style.background_gradient(subset=['Win_Rate', 'Expected_R'], cmap='Greens')
+                .format({'Expected_R': '{:.2f}%', 'Worst_Case': '{:.2f}%'}),
                 use_container_width=True,
                 hide_index=True
             )
         else:
-            st.info("No stocks found with a Win Rate ≥ 60% for the upcoming period.")
+            st.info("No stocks found with a Win Rate ≥ 70% for the selected period.")
 
         # --- TABLE 3: TOP 5 SECTORS ---
         st.markdown("### 🏢 Table 3: Top 5 Sectors by Seasonal Performance")
