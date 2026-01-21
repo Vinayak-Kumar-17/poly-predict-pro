@@ -140,7 +140,17 @@ def calculate_seasonality_stats(price_df, ticker):
     df_returns['Z_Score'] = df_returns.groupby('Month')['Return'].transform(lambda x: (x - x.mean()) / (x.std() if x.std() != 0 else 1))
     outliers = df_returns[df_returns['Z_Score'].abs() > 2.5]
     
-    return heatmap_df, month_stats, df_returns, outliers
+    # Financial Truth: CAGR (Geometric Mean Monthly Return)
+    # Total Growth = Price_End / Price_Start
+    # CAGR_Monthly = (Total Growth ^ (1/n_months)) - 1
+    total_months = len(df_returns)
+    if total_months > 0:
+        total_growth = prices.iloc[-1] / prices.iloc[0]
+        cagr_monthly = (pow(total_growth, 1/total_months) - 1) * 100
+    else:
+        cagr_monthly = 0
+    
+    return heatmap_df, month_stats, df_returns, outliers, cagr_monthly
 
 @st.cache_data
 def process_data(df, x_col, y_col, use_log=False):
@@ -373,7 +383,8 @@ with seasonality_tab:
     if data_mode == "Stock Market" and raw_data is not None:
         st.subheader(f"📅 Seasonality Analysis: {focal_ticker}")
         
-        heatmap_df, month_stats, raw_returns, outliers = calculate_seasonality_stats(raw_data, focal_ticker)
+        # New signature with cagr_monthly
+        heatmap_df, month_stats, raw_returns, outliers, cagr_monthly = calculate_seasonality_stats(raw_data, focal_ticker)
         
         # Win-Rate & Volatility Row
         st.markdown("### 📊 Performance Summary")
@@ -384,10 +395,15 @@ with seasonality_tab:
         worst_month = month_stats['Mean'].idxmin()
         best_winrate = month_stats['Win_Rate'].idxmax()
         
-        m_col1.metric("Avg. Monthly Return", f"{month_stats['Mean'].mean():.2f}%")
+        # Combined Arithmetic and Compounded Metric
+        m_col1.metric("Avg. Monthly Return", f"{month_stats['Mean'].mean():.2f}%", help="Arithmetic Mean: Simple average of monthly swings.")
+        m_col1.markdown(f"**Compounded (CAGR):** `{cagr_monthly:.2f}%` 💎", help="Geometric Mean: The true growth rate your wealth feels after accounting for volatility drag.")
+        
         m_col2.metric("Best Month (Avg)", f"{calendar.month_name[best_month]}", f"{month_stats.loc[best_month, 'Mean']:.2f}%")
         m_col3.metric("Worst Month (Avg)", f"{calendar.month_name[worst_month]}", f"{month_stats.loc[worst_month, 'Mean']:.2f}%", delta_color="inverse")
         m_col4.metric("Highest Win-Rate", f"{calendar.month_name[best_winrate]}", f"{month_stats.loc[best_winrate, 'Win_Rate']:.1f}%")
+        
+        st.info("💡 **Why two averages?** Arithmetic Mean shows the average monthly swing. **Compounded (CAGR)** shows the real rate of growth. If a stock is highly volatile (like SBIN), the Arithmetic Mean is usually higher, but the CAGR is what actually builds wealth.")
         
         # --- RED FLAG DETECTION SYSTEM ---
         st.markdown("---")
