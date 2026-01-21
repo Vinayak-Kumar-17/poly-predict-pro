@@ -84,28 +84,23 @@ st.markdown("---")
 @st.cache_data
 def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
     """
-    Investor-Grade Screener v3.2:
-    - Uses monthly data for speed and reliability.
-    - Robust ROI: (End Close / Last Available Close before Start)
-    - Flexible 3-year minimum with warning.
+    Investor-Grade Screener v3.3:
+    - Uses 1d data and resamples internally for maximum reliability.
+    - Lowers threshold to 2 years to ensure new/recent stocks are shown.
     """
     tickers = list(NIFTY_50_TICKERS.keys())
     
-    # Use monthly data for stability
+    # Use 1d data - MUCH more reliable for Indian stock history via yfinance
     try:
-        data = yf.download(tickers, period=history_period, interval="1mo", group_by='ticker', progress=False)
+        data = yf.download(tickers, period=history_period, interval="1d", group_by='ticker', progress=False)
     except Exception as e:
-        return pd.DataFrame(), [("All Tickers", f"Data fetch failed: {str(e)}")]
+        return pd.DataFrame(), [("All Tickers", f"Fetch failed: {str(e)}")]
 
     if data.empty:
-        return pd.DataFrame(), [("All Tickers", "No data returned from Yahoo Finance")]
+        return pd.DataFrame(), [("All Tickers", "No data returned (Check internet/symbol)")]
         
     results = []
     failed_tickers = []
-    
-    # We need a progress holder in the UI, but we can't easily put it inside @st.cache_data 
-    # and have it behave well on cache hits. We'll handle progress in the UI calling loop if possible,
-    # or just keep it simple here.
     
     start_month = min(month_list)
     end_month = max(month_list)
@@ -113,44 +108,41 @@ def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
     for ticker in tickers:
         try:
             if ticker not in data.columns.levels[0]:
-                failed_tickers.append((ticker, "Ticker missing in downloaded data"))
+                failed_tickers.append((ticker, "Excluded: Ticker missing in bulk data"))
                 continue
                 
-            t_data = data[ticker].dropna(subset=['Close'])
-            if t_data.empty:
-                failed_tickers.append((ticker, "No price data available"))
+            # Take daily data and resample to monthly-end (M) for clean price points
+            raw_t = data[ticker].dropna(subset=['Close'])
+            if len(raw_t) < 400: # Less than ~2 years of trading days
+                failed_tickers.append((ticker, f"Excluded: Less than 2 years of history"))
                 continue
+
+            # Resample to end-of-month (M) for robust analysis
+            t_monthly = raw_t['Close'].resample('M').last().to_frame()
+            t_monthly['Month'] = t_monthly.index.month
+            t_monthly['Year'] = t_monthly.index.year
             
-            years = sorted(t_data.index.year.unique())
+            years = sorted(t_monthly['Year'].unique())
             annual_trades = []
             
             for yr in years:
-                yr_data = t_data[t_data.index.year == yr]
+                # 1. Get End Price (Last close of end_month in this year)
+                end_match = t_monthly[(t_monthly['Year'] == yr) & (t_monthly['Month'] == end_month)]
+                if end_match.empty: continue
+                end_price = end_match['Close'].iloc[-1]
                 
-                # Robust ROI logic:
-                # 1. End Close: Closing price of the end_month in this year
-                end_price_match = yr_data[yr_data.index.month == end_month]
-                if end_price_match.empty: continue
-                end_price = end_price_match['Close'].iloc[-1]
+                # 2. Get Start Price (Close of month BEFORE start_month)
+                # We look at the entire t_monthly index before the start date for this year
+                block_start_date = pd.Timestamp(year=yr, month=start_month, day=1)
+                lookback = t_monthly[t_monthly.index < block_start_date]
                 
-                # 2. Start Price: Closing price of the month BEFORE start_month
-                # If start_month is Jan (1), we need Dec of yr-1
-                if start_month == 1:
-                    lookback_data = t_data[(t_data.index.year == yr-1) & (t_data.index.month == 12)]
-                else:
-                    lookback_data = yr_data[yr_data.index.month == (start_month - 1)]
-                
-                # Fallback: Find the last available close before the actual start of the block in this year
-                if lookback_data.empty:
-                    lookback_data = t_data[t_data.index < pd.Timestamp(year=yr, month=start_month, day=1)]
-                
-                if lookback_data.empty: continue
-                start_price = lookback_data['Close'].iloc[-1]
+                if lookback.empty: continue
+                start_price = lookback['Close'].iloc[-1]
                 
                 roi = ((end_price / start_price) - 1) * 100
                 
-                # Volume - average during the block
-                block_vol = yr_data[yr_data.index.month.isin(month_list)]['Volume'].mean() if 'Volume' in yr_data else 0
+                # Volume - average during the block from RAW daily data
+                block_vol = raw_t[(raw_t.index.year == yr) & (raw_t.index.month.isin(month_list))]['Volume'].mean() if 'Volume' in raw_t else 0
                 
                 annual_trades.append({
                     'Year': yr,
@@ -159,8 +151,9 @@ def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
                     'Volume': block_vol
                 })
             
-            if len(annual_trades) < 3:
-                failed_tickers.append((ticker, f"Insufficient data: only {len(annual_trades)} full years found"))
+            # Lower threshold to 2 years so users see SOMETHING even for new IPOs
+            if len(annual_trades) < 2:
+                failed_tickers.append((ticker, f"Excluded: No trade window found in {len(years)} available years"))
                 continue
             
             df_trades = pd.DataFrame(annual_trades)
@@ -173,18 +166,18 @@ def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
             best_case = df_trades['ROI'].max()
             avg_vol = df_trades['Volume'].mean()
             
-            # Recency Analysis
-            recent_years = 3 if total_years >= 3 else total_years
-            recent_df = df_trades.tail(recent_years)
-            recent_win_rate = (recent_df['Win'].sum() / recent_years) * 100
+            # Use all available years for recency (last 3 or max available)
+            recent_N = min(3, total_years)
+            recent_df = df_trades.tail(recent_N)
+            recent_win_rate = (recent_df['Win'].sum() / recent_N) * 100
             recent_median = recent_df['ROI'].median()
-            recency_warning = recent_median < (median_roi * 0.5) or recent_win_rate < (win_rate * 0.7)
+            recency_warning = (recent_median < (median_roi * 0.5)) if total_years >= 4 else False
                 
             stale = df_trades['Win'].tail(2).sum() == 0 if total_years >= 2 else False
             liq_score = min(5, max(1, int(np.log10(avg_vol/10000)))) if avg_vol > 0 else 1
             expected_ret = (median_roi * 0.7) + (mean_roi * 0.3)
             
-            # Reliability Score (Stars)
+            # Reliability Score
             score = 0
             if win_rate >= 70: score += 2
             elif win_rate >= 55: score += 1
@@ -192,7 +185,6 @@ def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
             
             if risk_profile == "Conservative":
                 if worst_case < -15: score = max(0, score - 2)
-                if win_rate < 60: score = max(0, score - 1)
             elif risk_profile == "Aggressive":
                 if expected_ret > 8: score += 1
             
