@@ -89,9 +89,26 @@ def run_stock_screener(month_list):
     data = yf.download(tickers, period="10y", interval="1mo", group_by='ticker')
     
     upcoming_months = month_list
-    
     results = []
     
+    # Reuse reliability logic
+    def get_internal_reliability(returns_group):
+        mean = returns_group.mean()
+        median = returns_group.median()
+        win_rate = (returns_group > 0).mean()
+        volatility = returns_group.std()
+        
+        score = 0
+        if win_rate >= 0.65: score += 2
+        elif win_rate >= 0.50: score += 1
+        
+        if volatility < abs(mean) and abs(mean) > 1: score += 1
+        
+        skew_factor = abs(mean - median)
+        if skew_factor < 1.0: score += 2
+        elif skew_factor < 2.5: score += 1
+        return min(5, score)
+
     for ticker in tickers:
         try:
             # Monthly returns
@@ -105,33 +122,12 @@ def run_stock_screener(month_list):
             ticker_stats = []
             for m in upcoming_months:
                 m_returns = df_ret[df_ret['Month'] == m]['Return']
-                if len(m_returns) < 5: continue # Need at least 5 years of data
+                if len(m_returns) < 5: continue
                 
                 mean_ret = m_returns.mean()
                 median_ret = m_returns.median()
-                std_ret = m_returns.std()
                 win_rate = (m_returns > 0).mean() * 100
-                worst_case = np.percentile(m_returns, 10)
-                best_case = np.percentile(m_returns, 90)
-                sharpe = median_ret / std_ret if std_ret != 0 else 0
-                
-                # Consistency = win_rate * (1 - coeff_variation)
-                # Coeff variation = std / |mean|
-                cv = std_ret / abs(mean_ret) if mean_ret != 0 else 1
-                consistency = win_rate * max(0, (1 - cv))
-                
-                # Smart Score (Scaled 0-10)
-                # Normalize median (capped at 10% for scaling)
-                norm_median = min(max(median_ret, -5), 10) / 10.0
-                smart_score = (
-                    (0.30 * norm_median) + 
-                    (0.35 * (win_rate/100.0)) + 
-                    (0.25 * (min(sharpe, 1))) + 
-                    (0.10 * (min(consistency/100.0, 1)))
-                ) * 10
-                
-                # Outlier Flag
-                outlier_flag = abs(mean_ret - median_ret) > (1.5 * std_ret) if std_ret != 0 else False
+                rel_score = get_internal_reliability(m_returns)
                 
                 ticker_stats.append({
                     'Month': m,
@@ -140,40 +136,28 @@ def run_stock_screener(month_list):
                     'Median': median_ret,
                     'Mean': mean_ret,
                     'Win_Rate': win_rate,
-                    'Sharpe': sharpe,
-                    'Worst_Case': worst_case,
-                    'Best_Case': best_case,
-                    'Smart_Score': smart_score,
-                    'Consistency': consistency,
-                    'Outlier': outlier_flag
+                    'Reliability': rel_score,
+                    'Worst_Case': np.percentile(m_returns, 10),
+                    'Best_Case': np.percentile(m_returns, 90),
+                    'Outlier': abs(mean_ret - median_ret) > (1.5 * m_returns.std()) if m_returns.std() != 0 else False
                 })
             
-            # Aggregate ticker performance over 3 months
             if ticker_stats:
-                avg_smart = np.mean([s['Smart_Score'] for s in ticker_stats])
-                avg_win = np.mean([s['Win_Rate'] for s in ticker_stats])
-                avg_median = np.mean([s['Median'] for s in ticker_stats])
-                avg_sharpe = np.mean([s['Sharpe'] for s in ticker_stats])
-                avg_worst = np.mean([s['Worst_Case'] for s in ticker_stats])
-                avg_best = np.mean([s['Best_Case'] for s in ticker_stats])
-                outlier_any = any([s['Outlier'] for s in ticker_stats])
-                
                 results.append({
                     'Ticker': ticker,
                     'Sector': NIFTY_50_TICKERS[ticker],
-                    'Smart_Score': avg_smart,
-                    'Win_Rate': avg_win,
-                    'Median': avg_median,
+                    'Reliability': np.mean([s['Reliability'] for s in ticker_stats]),
+                    'Win_Rate': np.mean([s['Win_Rate'] for s in ticker_stats]),
+                    'Median': np.mean([s['Median'] for s in ticker_stats]),
                     'Mean': np.mean([s['Mean'] for s in ticker_stats]),
-                    'Sharpe': avg_sharpe,
-                    'Worst_Case': avg_worst,
-                    'Best_Case': avg_best,
-                    'Outlier': outlier_any
+                    'Worst_Case': np.mean([s['Worst_Case'] for s in ticker_stats]),
+                    'Best_Case': np.mean([s['Best_Case'] for s in ticker_stats]),
+                    'Outlier': any([s['Outlier'] for s in ticker_stats])
                 })
         except:
             continue
             
-    return pd.DataFrame(results), upcoming_months
+    return pd.DataFrame(results)
 
 @st.cache_data
 def fetch_multi_stock_data(tickers, period):
@@ -685,90 +669,103 @@ with screener_tab:
     
     selected_month_indices = [month_options.index(m) + 1 for m in selected_month_names]
     
+    # Session State for persistence
+    if 'screener_res' not in st.session_state:
+        st.session_state.screener_res = None
+    if 'screener_months' not in st.session_state:
+        st.session_state.screener_months = None
+
     if st.button("🚀 Run Seasonal Screener (Analyzes 10Y Data)"):
         if not selected_month_indices:
             st.error("Please select at least one month to analyze.")
         else:
             with st.spinner("Analyzing Nifty 50 historical patterns... This may take a minute."):
-                screener_df, months_idx = run_stock_screener(selected_month_indices)
+                st.session_state.screener_res = run_stock_screener(selected_month_indices)
+                st.session_state.screener_months = selected_month_names
                 
-                if screener_df.empty:
-                    st.error("Could not fetch data for stocks. Please check your internet connection or try different months.")
-                else:
-                    st.success(f"Analysis complete for: **{', '.join(selected_month_names)}**")
-                
-                # --- TABLE 1: TOP 10 BY SMART SCORE ---
-                st.markdown("### 🏆 Table 1: Top 10 Stocks by Smart Score")
-                top_smart = screener_df.sort_values(by='Smart_Score', ascending=False).head(10).copy()
-                top_smart.insert(0, 'Rank', range(1, 11))
-                
-                # Format Outlier Flag
-                top_smart['Outlier Flag'] = top_smart['Outlier'].apply(lambda x: "⚠️" if x else "✅")
-                
-                st.dataframe(
-                    top_smart[['Rank', 'Ticker', 'Sector', 'Smart_Score', 'Median', 'Win_Rate', 'Worst_Case', 'Best_Case', 'Sharpe', 'Outlier Flag']]
-                    .style.background_gradient(subset=['Smart_Score', 'Median', 'Win_Rate'], cmap='RdYlGn')
-                    .format({'Smart_Score': '{:.2f}', 'Median': '{:.2f}%', 'Win_Rate': '{:.1f}%', 'Worst_Case': '{:.2f}%', 'Best_Case': '{:.2f}%', 'Sharpe': '{:.2f}'}),
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                # --- TABLE 2: TOP 10 BY WIN RATE ---
-                st.markdown("### 📈 Table 2: Top 10 Stocks by Win Rate (Consistent Performers)")
-                top_win = screener_df[screener_df['Win_Rate'] >= 60].sort_values(by='Win_Rate', ascending=False).head(10).copy()
-                if not top_win.empty:
-                    top_win.insert(0, 'Rank', range(1, len(top_win) + 1))
-                    top_win['Outlier Flag'] = top_win['Outlier'].apply(lambda x: "⚠️" if x else "✅")
-                    
-                    st.dataframe(
-                        top_win[['Rank', 'Ticker', 'Sector', 'Smart_Score', 'Median', 'Win_Rate', 'Worst_Case', 'Best_Case', 'Sharpe', 'Outlier Flag']]
-                        .style.background_gradient(subset=['Win_Rate', 'Smart_Score'], cmap='Greens')
-                        .format({'Smart_Score': '{:.2f}', 'Median': '{:.2f}%', 'Win_Rate': '{:.1f}%', 'Worst_Case': '{:.2f}%', 'Best_Case': '{:.2f}%', 'Sharpe': '{:.2f}'}),
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                else:
-                    st.info("No stocks found with a Win Rate ≥ 60% for the upcoming period.")
+    if st.session_state.screener_res is not None:
+        screener_df = st.session_state.screener_res
+        st.success(f"Analysis complete for: **{', '.join(st.session_state.screener_months)}**")
+        
+        # --- TABLE 1: TOP 10 BY RELIABILITY ---
+        st.markdown("### 🏆 Table 1: Top 10 Stocks by Reliability & Median")
+        
+        # Ranking Logic: Reliability (Stars) -> Median -> Win Rate
+        top_reliable = screener_df.sort_values(by=['Reliability', 'Median', 'Win_Rate'], ascending=False).head(10).copy()
+        top_reliable.insert(0, 'Rank', range(1, 11))
+        
+        # Convert Reliability to Stars
+        top_reliable['Reliability_Stars'] = top_reliable['Reliability'].apply(lambda x: "⭐" * int(round(x)) if x >= 1 else "⚠️")
+        top_reliable['Outlier Flag'] = top_reliable['Outlier'].apply(lambda x: "🚩" if x else "✅")
+        
+        st.dataframe(
+            top_reliable[['Rank', 'Ticker', 'Sector', 'Reliability_Stars', 'Median', 'Win_Rate', 'Worst_Case', 'Best_Case', 'Outlier Flag']]
+            .style.background_gradient(subset=['Median', 'Win_Rate'], cmap='RdYlGn')
+            .format({'Median': '{:.2f}%', 'Win_Rate': '{:.1f}%', 'Worst_Case': '{:.2f}%', 'Best_Case': '{:.2f}%'}),
+            use_container_width=True,
+            hide_index=True
+        )
+        st.caption("**Ranking Strategy:** Prioritizes consistency (Reliability) and median performance over simple averages.")
+        
+        # --- TABLE 2: TOP 10 BY WIN RATE ---
+        st.markdown("### 📈 Table 2: Top 10 Stocks by Win Rate (Consistency Leaders)")
+        top_win = screener_df[screener_df['Win_Rate'] >= 60].sort_values(by=['Win_Rate', 'Reliability'], ascending=False).head(10).copy()
+        if not top_win.empty:
+            top_win.insert(0, 'Rank', range(1, len(top_win) + 1))
+            top_win['Reliability_Stars'] = top_win['Reliability'].apply(lambda x: "⭐" * int(round(x)) if x >= 1 else "⚠️")
+            top_win['Outlier Flag'] = top_win['Outlier'].apply(lambda x: "🚩" if x else "✅")
+            
+            st.dataframe(
+                top_win[['Rank', 'Ticker', 'Sector', 'Win_Rate', 'Reliability_Stars', 'Median', 'Worst_Case', 'Outlier Flag']]
+                .style.background_gradient(subset=['Win_Rate', 'Median'], cmap='Greens')
+                .format({'Median': '{:.2f}%', 'Win_Rate': '{:.1f}%', 'Worst_Case': '{:.2f}%'}),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No stocks found with a Win Rate ≥ 60% for the upcoming period.")
 
-                # --- TABLE 3: TOP 5 SECTORS ---
-                st.markdown("### 🏢 Table 3: Top 5 Sectors by Seasonal Performance")
-                
-                sector_stats = screener_df.groupby('Sector').agg({
-                    'Win_Rate': 'mean',
-                    'Median': 'mean',
-                    'Ticker': 'count'
-                }).reset_index()
-                
-                # Find top 3 performers per sector
-                def get_top_performers(sector):
-                    top_3 = screener_df[screener_df['Sector'] == sector].sort_values(by='Smart_Score', ascending=False).head(3)['Ticker'].tolist()
-                    return ", ".join(top_3)
-                
-                sector_stats['Top 3 Performers'] = sector_stats['Sector'].apply(get_top_performers)
-                sector_stats = sector_stats.sort_values(by='Win_Rate', ascending=False).head(5).copy()
-                sector_stats.insert(0, 'Rank', range(1, 6))
-                
-                disp_sectors = sector_stats.rename(columns={
-                    'Win_Rate': 'Sector Win Rate (%)',
-                    'Median': 'Sector Median Return (%)',
-                    'Ticker': 'Stocks Analyzed'
-                })
-                
-                st.dataframe(
-                    disp_sectors.style.background_gradient(subset=['Sector Win Rate (%)', 'Sector Median Return (%)'], cmap='Blues')
-                    .format({'Sector Win Rate (%)': '{:.1f}%', 'Sector Median Return (%)': '{:.2f}%'}),
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                # Download insights
-                st.markdown("---")
-                csv_screener = screener_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Download Full Screener Report (CSV)",
-                    data=csv_screener,
-                    file_name="nifty_seasonal_screener.csv",
-                    mime="text/csv",
-                )
+        # --- TABLE 3: TOP 5 SECTORS ---
+        st.markdown("### 🏢 Table 3: Top 5 Sectors by Seasonal Performance")
+        
+        sector_stats = screener_df.groupby('Sector').agg({
+            'Win_Rate': 'mean',
+            'Median': 'mean',
+            'Reliability': 'mean',
+            'Ticker': 'count'
+        }).reset_index()
+        
+        # Find top performers per sector based on reliability
+        def get_top_performers(sector):
+            t_performers = screener_df[screener_df['Sector'] == sector].sort_values(by=['Reliability', 'Median'], ascending=False).head(3)['Ticker'].tolist()
+            return ", ".join(t_performers)
+        
+        sector_stats['Top Performers'] = sector_stats['Sector'].apply(get_top_performers)
+        sector_stats = sector_stats.sort_values(by=['Reliability', 'Win_Rate'], ascending=False).head(5).copy()
+        sector_stats.insert(0, 'Rank', range(1, 6))
+        
+        disp_sectors = sector_stats.rename(columns={
+            'Win_Rate': 'Sect. Win Rate %',
+            'Median': 'Sect. Median %',
+            'Reliability': 'Sect. Reliability',
+            'Ticker': 'Count'
+        })
+        
+        st.dataframe(
+            disp_sectors.style.background_gradient(subset=['Sect. Win Rate %', 'Sect. Median %'], cmap='Blues')
+            .format({'Sect. Win Rate %': '{:.1f}', 'Sect. Median %': '{:.2f}', 'Sect. Reliability': '{:.1f}'}),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Download insights
+        st.markdown("---")
+        csv_screener = screener_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Full Screener Report (CSV)",
+            data=csv_screener,
+            file_name="nifty_seasonal_screener.csv",
+            mime="text/csv",
+        )
     else:
         st.info("Click the button above to start the multi-year seasonal analysis for Nifty 50 stocks.")
