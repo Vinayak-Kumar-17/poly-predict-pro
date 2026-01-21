@@ -66,58 +66,77 @@ with st.sidebar:
     x_col = st.text_input("X Axis Column", "x")
     y_col = st.text_input("Y Axis Column", "y")
 
+@st.cache_data
+def process_data(df, x_col, y_col):
+    # Robust data cleaning using Pandas
+    temp_df = df[[x_col, y_col]].copy()
+    
+    # Handle X column (potentially dates)
+    is_x_date = False
+    base_date = None
+    try:
+        # Try to convert to datetime
+        temp_df[x_col] = pd.to_datetime(temp_df[x_col], errors='raise')
+        is_x_date = True
+        # Convert to ordinal for regression (numeric)
+        base_date = temp_df[x_col].min()
+        X_series = (temp_df[x_col] - base_date).dt.days
+    except:
+        # Fallback to standard numeric conversion
+        is_x_date = False
+        X_series = pd.to_numeric(temp_df[x_col], errors='coerce')
+        
+    # Handle Y column (must be numeric)
+    y_series = pd.to_numeric(temp_df[y_col], errors='coerce')
+    
+    # Combined cleaner DataFrame
+    clean_df = pd.DataFrame({'x_val': X_series, 'y_val': y_series})
+    clean_df = clean_df.dropna()
+    
+    return clean_df, is_x_date, base_date
+
+@st.cache_resource
+def train_model(X, y, auto_degree, manual_degree):
+    engine = RegressionEngine(degree=manual_degree if not auto_degree else 2)
+    if auto_degree:
+        engine.find_best_degree(X, y)
+    engine.fit(X, y)
+    return engine
+
 # Main Logic
 data_source = upload_file
 if 'sample_data' in st.session_state and upload_file is None:
     data_source = io.StringIO(st.session_state['sample_data'])
 
 if data_source is not None:
-    df = pd.read_csv(data_source)
+    # Use a cached read to avoid re-reading the CSV
+    @st.cache_data
+    def get_df(source):
+        if isinstance(source, io.StringIO):
+            source.seek(0)
+        return pd.read_csv(source)
+    
+    df = get_df(data_source)
+    
     st.subheader("📊 Data Preview")
     st.dataframe(df.head(10), use_container_width=True)
     
     if x_col in df.columns and y_col in df.columns:
-        # Robust data cleaning using Pandas
-        temp_df = df[[x_col, y_col]].copy()
-        
-        # Handle X column (potentially dates)
-        is_x_date = False
-        try:
-            # Try to convert to datetime
-            temp_df[x_col] = pd.to_datetime(temp_df[x_col], errors='raise')
-            is_x_date = True
-            # Convert to ordinal for regression (numeric)
-            base_date = temp_df[x_col].min()
-            X_series = (temp_df[x_col] - base_date).dt.days
-        except:
-            # Fallback to standard numeric conversion
-            is_x_date = False
-            X_series = pd.to_numeric(temp_df[x_col], errors='coerce')
-            
-        # Handle Y column (must be numeric)
-        y_series = pd.to_numeric(temp_df[y_col], errors='coerce')
-        
-        # Combined cleaner DataFrame
-        clean_df = pd.DataFrame({'x_val': X_series, 'y_val': y_series})
-        clean_df = clean_df.dropna()
+        with st.spinner("Processing data..."):
+            clean_df, is_x_date, base_date = process_data(df, x_col, y_col)
         
         # Explicitly ensure they are floats for the engine
         X = clean_df['x_val'].astype(float).values
         y = clean_df['y_val'].astype(float).values
         
         if len(X) < 2:
-            st.error("Error: Not enough valid numeric data points for regression after cleaning. Check your columns.")
+            st.error("Error: Not enough valid numeric data points for regression after cleaning.")
             st.stop()
             
-        # Initialize Engine
-        engine = RegressionEngine(degree=manual_degree if not auto_degree else 2)
+        # Initialize and train Engine (Cached)
+        with st.spinner("Training Model..."):
+            engine = train_model(X, y, auto_degree, manual_degree)
         
-        if auto_degree:
-            with st.spinner("Optimizing degree..."):
-                engine.find_best_degree(X, y)
-                st.info(f"✅ Best Degree Found: **{engine.degree}**")
-        
-        engine.fit(X, y)
         y_pred = engine.predict(X)
         stats = StatsEngine.compute_all(y, y_pred, X.reshape(-1, 1))
         
