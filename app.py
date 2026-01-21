@@ -19,6 +19,16 @@ st.set_page_config(
 # Custom Styling
 st.markdown("""
 <style>
+    /* Reduce top padding of main content */
+    .main .block-container {
+        padding-top: 1.5rem !important;
+        padding-bottom: 3rem !important;
+    }
+    /* Reduce top padding of sidebar */
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 2rem !important;
+    }
+    /* Custom background and theme colors */
     .main {
         background: linear-gradient(135deg, #1e1e2f 0%, #121212 100%);
         color: #ffffff;
@@ -47,11 +57,10 @@ st.markdown("""
         background-color: #0097a7;
         box-shadow: 0 0 15px rgba(0, 188, 212, 0.4);
     }
-    .month-card {
-        padding: 10px;
-        border-radius: 8px;
-        text-align: center;
-        margin-bottom: 10px;
+    /* Sidebar radio styling */
+    div[data-testid="stSidebar"] .stRadio > label {
+        font-weight: bold;
+        color: #00bcd4;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -77,9 +86,15 @@ NIFTY_50_TICKERS = {
     'WIPRO.NS': 'IT'
 }
 
-# App Header
-st.title("🚀 PolyPredict Pro")
-st.markdown("---")
+# --- SIDEBAR NAVIGATION ---
+with st.sidebar:
+    st.title("🧭 Navigation")
+    app_mode = st.radio(
+        "Choose App Mode",
+        ["📈 Stock Analysis", "🔍 Market Screener", "🤖 Trading Hub (Upcoming)"],
+        index=0
+    )
+    st.markdown("---")
 
 @st.cache_data
 def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
@@ -374,70 +389,92 @@ def train_model(X, y, auto_degree, manual_degree, alpha=1.0):
     engine.fit(X, y)
     return engine
 
+# Common data holders
+df = None
+raw_data = None
+tickers_list = []
+period = "5y"
+x_col = "x"
+y_col = "y"
+use_log = True
+auto_degree = True
+manual_degree = 2
+alpha = 1.0
+
 # Sidebar for controls
 with st.sidebar:
-    st.header("🛠 Configuration")
-    
-    data_mode = st.radio("Select Data Source", ["Upload CSV", "Stock Market", "Sample Data"], index=1)
-    
-    df = None
-    x_col_default = "x"
-    y_col_default = "y"
-    
-    if data_mode == "Upload CSV":
-        upload_file = st.file_uploader("Upload CSV Dataset", type=["csv"])
-        if upload_file:
-            df = pd.read_csv(upload_file)
-    elif data_mode == "Stock Market":
-        ticker_input = st.text_input("Ticker Symbols (comma-separated for Correlation)", "ITC.NS, TATAELXSI.NS")
-        tickers_list = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
-        period = st.selectbox("Market History Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"], index=4)
-        with st.spinner("Fetching market data..."):
-            raw_data = fetch_multi_stock_data(tickers_list, period)
-            
-        if raw_data is not None:
-            # For Tab 1 (Regression), we pick one ticker to focus on
-            focal_ticker = st.selectbox("Select Ticker for Detailed Analysis", tickers_list)
-            
-            # Simplified df for regression logic (compatible with legacy)
-            if isinstance(raw_data['Close'], pd.Series):
-                df = raw_data[['Close']].copy().reset_index()
-                df.columns = ['Date', 'Close']
-            else:
-                df = raw_data['Close'][[focal_ticker]].copy().reset_index()
-                df.columns = ['Date', 'Close']
-                
-            x_col_default = "Date"
-            y_col_default = "Close"
-        else:
-            st.error("No data found for tickers.")
-    else:
-        # Sample Data Mode
-        if 'sample_data' not in st.session_state:
-            sample_x = np.linspace(0, 10, 50)
-            sample_y = 2 * (sample_x**2) - 5 * sample_x + 10 + np.random.normal(0, 10, 50)
-            st.session_state['sample_data'] = pd.DataFrame({'x': sample_x, 'y': sample_y})
-        df = st.session_state['sample_data']
+    if app_mode == "📈 Stock Analysis":
+        st.header("🛠 Analysis Config")
+        data_mode = st.radio("Select Data Source", ["Upload CSV", "Stock Market", "Sample Data"], index=1)
+        
         x_col_default = "x"
         y_col_default = "y"
+        
+        if data_mode == "Upload CSV":
+            upload_file = st.file_uploader("Upload CSV Dataset", type=["csv"])
+            if upload_file:
+                df = pd.read_csv(upload_file)
+        elif data_mode == "Stock Market":
+            ticker_input = st.text_input("Ticker Symbols (comma-separated for Correlation)", "ITC.NS, TATAELXSI.NS")
+            tickers_list = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
+            period = st.selectbox("Market History Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"], index=4)
+            with st.spinner("Fetching market data..."):
+                raw_data = fetch_multi_stock_data(tickers_list, period)
+                
+            if raw_data is not None:
+                focal_ticker = st.selectbox("Select Ticker for Detailed Analysis", tickers_list)
+                if isinstance(raw_data['Close'], pd.Series):
+                    df = raw_data[['Close']].copy().reset_index()
+                    df.columns = ['Date', 'Close']
+                else:
+                    df = raw_data['Close'][[focal_ticker]].copy().reset_index()
+                    df.columns = ['Date', 'Close']
+                x_col_default = "Date"
+                y_col_default = "Close"
+            else:
+                st.error("No data found for tickers.")
+        else:
+            if 'sample_data' not in st.session_state:
+                sample_x = np.linspace(0, 10, 50)
+                sample_y = 2 * (sample_x**2) - 5 * sample_x + 10 + np.random.normal(0, 10, 50)
+                st.session_state['sample_data'] = pd.DataFrame({'x': sample_x, 'y': sample_y})
+            df = st.session_state['sample_data']
+            x_col_default = "x"
+            y_col_default = "y"
 
-    st.markdown("---")
-    st.markdown("### Model Parameters")
-    auto_degree = st.checkbox("Auto-optimize Polynomial Degree", value=True)
-    manual_degree = st.slider("Manual Degree", 1, 10, 2, disabled=auto_degree)
+        st.markdown("---")
+        st.markdown("### Model Parameters")
+        auto_degree = st.checkbox("Auto-optimize Polynomial Degree", value=True)
+        manual_degree = st.slider("Manual Degree", 1, 10, 2, disabled=auto_degree)
+        use_log = st.checkbox("Financial Mode (Log-Regression)", value=True, help="Ensures positive predictions.")
+        alpha = st.slider("Regularization (Ridge Alpha)", 0.0, 10.0, 1.0, step=0.1)
+
+        st.markdown("---")
+        st.markdown("### Columns Mapping")
+        x_col = st.text_input("X Axis Column", x_col_default)
+        y_col = st.text_input("Y Axis Column", y_col_default)
     
-    st.markdown("### Stability & Financial Mode")
-    use_log = st.checkbox("Financial Mode (Log-Regression)", value=True, help="Ensures positive predictions.")
-    alpha = st.slider("Regularization (Ridge Alpha)", 0.0, 10.0, 1.0, step=0.1)
+    elif app_mode == "🔍 Market Screener":
+        st.header("🔍 Screener Config")
+        screener_period = st.selectbox(
+            "Screener History Period", 
+            ["1y", "2y", "5y", "10y", "max"], 
+            index=2,
+            help="The screener will analyze this much historical data for each Nifty 50 stock."
+        )
+        st.info("💡 The screener analyzes all Nifty 50 tokens based on the months and history selected here.")
 
+    elif app_mode == "🤖 Trading Hub (Upcoming)":
+        st.header("🤖 Trading Terminal")
+        st.info("This feature is currently under development. Stay tuned for AI-powered trade execution.")
+
+# --- MAIN PAGE CONTENT ---
+if app_mode == "📈 Stock Analysis":
+    st.title("🚀 PolyPredict Pro")
     st.markdown("---")
-    st.markdown("### Columns Mapping")
-    x_col = st.text_input("X Axis Column", x_col_default)
-    y_col = st.text_input("Y Axis Column", y_col_default)
-
-# --- TABS ---
-predictive_tab, seasonality_tab, screener_tab = st.tabs(["🔮 Predictive Insights", "📅 Seasonality Analysis", "🔍 Stock Screener"])
-with predictive_tab:
+    
+    predictive_tab, seasonality_tab = st.tabs(["🔮 Predictive Insights", "📅 Seasonality Analysis"])
+    with predictive_tab:
     if df is not None:
         st.subheader("📊 Data Preview")
         st.dataframe(df.head(10), use_container_width=True)
@@ -726,12 +763,14 @@ with seasonality_tab:
             file_name=f"{focal_ticker}_seasonality.csv",
             mime="text/csv",
         )
-with screener_tab:
-    st.subheader("🔍 Smart Stock Screener (Nifty 50)")
+
+elif app_mode == "🔍 Market Screener":
+    st.title("🔍 Smart Stock Screener")
     st.markdown("""
     This screener identifies stocks with the strongest **historical seasonal patterns** for the **selected months**. 
-    It ranks them using a composite **Smart Score** that balances returns, consistency, and risk.
+    It ranks them using a composite **Smart Score** (v3.4) that balances returns, consistency, and risk.
     """)
+    st.markdown("---")
     
     # Month Selection and Risk Profile UI
     ui_col1, ui_col2 = st.columns([2, 1])
@@ -766,13 +805,12 @@ with screener_tab:
     if 'screener_failed' not in st.session_state:
         st.session_state.screener_failed = []
 
-    if st.button("🚀 Run Seasonal Screener (Syncs with Sidebar Period)"):
+    if st.button(f"🚀 Run Seasonal Screener (Analyzing {screener_period})"):
         if not selected_month_indices:
             st.error("Please select at least one month to analyze.")
         else:
-            period_to_use = period if 'period' in locals() else "10y"
-            with st.spinner(f"Analyzing Nifty 50 over {period_to_use}... This may take a minute."):
-                res_df, failed = run_stock_screener(selected_month_indices, period_to_use, risk_profile)
+            with st.spinner(f"Analyzing Nifty 50 over {screener_period}... This may take a minute."):
+                res_df, failed = run_stock_screener(selected_month_indices, screener_period, risk_profile)
                 st.session_state.screener_res = res_df
                 st.session_state.screener_failed = failed
                 st.session_state.screener_months = selected_month_names
@@ -873,8 +911,9 @@ with screener_tab:
             })
             
             st.dataframe(
-                disp_sectors.style.background_gradient(subset=['Sect. Win Rate %', 'Sect. Median %'], cmap='Blues')
-                .format({'Sect. Win Rate %': '{:.1f}', 'Sect. Median %': '{:.2f}', 'Sect. Reliability': '{:.1f}'}),
+                disp_sectors[['Rank', 'Sector', 'Count', 'Sect. Win Rate %', 'Sect. Median %', 'Top Performers']]
+                .style.background_gradient(subset=['Sect. Win Rate %', 'Sect. Median %'], cmap='Blues')
+                .format({'Sect. Win Rate %': '{:.1f}%', 'Sect. Median %': '{:.2f}%'}),
                 use_container_width=True,
                 hide_index=True
             )
