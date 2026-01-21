@@ -738,100 +738,104 @@ with screener_tab:
                 
     if st.session_state.screener_res is not None:
         screener_df = st.session_state.screener_res
-        st.success(f"Analysis complete for: **{', '.join(st.session_state.screener_months)}**")
         
-        # --- DIVERSIFICATION CHECK ---
-        top_10 = screener_df.head(10)
-        sector_counts = top_10['Sector'].value_counts()
-        most_common_sector = sector_counts.index[0]
-        sector_pct = (sector_counts.iloc[0] / 10) * 100
-        
-        if sector_pct >= 50:
-            st.warning(f"⚠️ **Diversification Alert**: {sector_pct:.0f}% of your Top 10 stocks are from the **{most_common_sector}** sector. Consider balancing your portfolio.")
+        if screener_df.empty:
+            st.warning("⚠️ No stocks met the screening criteria for the selected period. This can happen if the historical data fetch fails for most tickers or if the filtering is too strict. Try a different month range or history period.")
+        else:
+            st.success(f"Analysis complete for: **{', '.join(st.session_state.screener_months)}**")
+            
+            # --- DIVERSIFICATION CHECK ---
+            top_10 = screener_df.head(10)
+            sector_counts = top_10['Sector'].value_counts()
+            most_common_sector = sector_counts.index[0]
+            sector_pct = (sector_counts.iloc[0] / 10) * 100
+            
+            if sector_pct >= 50:
+                st.warning(f"⚠️ **Diversification Alert**: {sector_pct:.0f}% of your Top 10 stocks are from the **{most_common_sector}** sector. Consider balancing your portfolio.")
 
-        # --- TABLE 1: TOP 10 BY EXPECTED RETURN ---
-        st.markdown("### 🏆 Table 1: Top 10 Stocks by Expected Return & Reliability")
-        
-        top_reliable = top_10.copy()
-        top_reliable.insert(0, 'Rank', range(1, 11))
-        
-        # Format columns for display
-        top_reliable['Reliability_Stars'] = top_reliable['Reliability'].apply(lambda x: "⭐" * int(x) if x >= 1 else "⚠️")
-        top_reliable['Liquidity_Score'] = top_reliable['Liquidity'].apply(lambda x: "💧" * int(x))
-        top_reliable['Alerts'] = top_reliable.apply(
-            lambda x: ("📉 Recency" if x['Recency_Alert'] else "") + 
-                      (" | ❄️ Stale" if x['Stale_Alert'] else ""), 
-            axis=1
-        )
-        top_reliable['Alerts'] = top_reliable['Alerts'].apply(lambda x: x.strip(" | ") if x else "✅ Clear")
-        
-        st.dataframe(
-            top_reliable[['Rank', 'Ticker', 'Sector', 'Reliability_Stars', 'Expected_R', 'Win_Count', 'Median', 'Worst_Case', 'Liquidity_Score', 'Alerts']]
-            .style.background_gradient(subset=['Expected_R', 'Median', 'Worst_Case'], cmap='RdYlGn')
-            .format({'Expected_R': '{:.2f}%', 'Median': '{:.2f}%', 'Worst_Case': '{:.2f}%'}),
-            use_container_width=True,
-            hide_index=True
-        )
-        st.caption(f"**Ranking Strategy ({risk_profile}):** Prioritizes Expected Return ($0.7 \\times Median + 0.3 \\times Mean$) and Win probability.")
-        
-        # --- TABLE 2: BACKTEST SUMMARY ---
-        st.markdown("### 📈 Table 2: High Probability Performers (Win Rate ≥ 70%)")
-        top_win = screener_df[screener_df['Win_Rate'] >= 70].sort_values(by=['Win_Rate', 'Expected_R'], ascending=False).head(10).copy()
-        if not top_win.empty:
-            top_win.insert(0, 'Rank', range(1, len(top_win) + 1))
-            top_win['Reliability_Stars'] = top_win['Reliability'].apply(lambda x: "⭐" * int(x) if x >= 1 else "⚠️")
+            # --- TABLE 1: TOP 10 BY EXPECTED RETURN ---
+            st.markdown("### 🏆 Table 1: Top 10 Stocks by Expected Return & Reliability")
+            
+            top_reliable = top_10.copy()
+            top_reliable.insert(0, 'Rank', range(1, 11))
+            
+            # Format columns for display
+            top_reliable['Reliability_Stars'] = top_reliable['Reliability'].apply(lambda x: "⭐" * int(x) if x >= 1 else "⚠️")
+            top_reliable['Liquidity_Score'] = top_reliable['Liquidity'].apply(lambda x: "💧" * int(x))
+            top_reliable['Alerts'] = top_reliable.apply(
+                lambda x: ("📉 Recency" if x['Recency_Alert'] else "") + 
+                          (" | ❄️ Stale" if x['Stale_Alert'] else ""), 
+                axis=1
+            )
+            top_reliable['Alerts'] = top_reliable['Alerts'].apply(lambda x: x.strip(" | ") if x else "✅ Clear")
             
             st.dataframe(
-                top_win[['Rank', 'Ticker', 'Sector', 'Win_Count', 'Expected_R', 'Reliability_Stars', 'Worst_Case']]
-                .style.background_gradient(subset=['Win_Rate', 'Expected_R'], cmap='Greens')
-                .format({'Expected_R': '{:.2f}%', 'Worst_Case': '{:.2f}%'}),
+                top_reliable[['Rank', 'Ticker', 'Sector', 'Reliability_Stars', 'Expected_R', 'Win_Count', 'Median', 'Worst_Case', 'Liquidity_Score', 'Alerts']]
+                .style.background_gradient(subset=['Expected_R', 'Median', 'Worst_Case'], cmap='RdYlGn')
+                .format({'Expected_R': '{:.2f}%', 'Median': '{:.2f}%', 'Worst_Case': '{:.2f}%'}),
                 use_container_width=True,
                 hide_index=True
             )
-        else:
-            st.info("No stocks found with a Win Rate ≥ 70% for the selected period.")
+            st.caption(f"**Ranking Strategy ({risk_profile}):** Prioritizes Expected Return ($0.7 \\times Median + 0.3 \\times Mean$) and Win probability.")
+            
+            # --- TABLE 2: BACKTEST SUMMARY ---
+            st.markdown("### 📈 Table 2: High Probability Performers (Win Rate ≥ 70%)")
+            top_win = screener_df[screener_df['Win_Rate'] >= 70].sort_values(by=['Win_Rate', 'Expected_R'], ascending=False).head(10).copy()
+            if not top_win.empty:
+                top_win.insert(0, 'Rank', range(1, len(top_win) + 1))
+                top_win['Reliability_Stars'] = top_win['Reliability'].apply(lambda x: "⭐" * int(x) if x >= 1 else "⚠️")
+                
+                st.dataframe(
+                    top_win[['Rank', 'Ticker', 'Sector', 'Win_Count', 'Expected_R', 'Reliability_Stars', 'Worst_Case']]
+                    .style.background_gradient(subset=['Win_Rate', 'Expected_R'], cmap='Greens')
+                    .format({'Expected_R': '{:.2f}%', 'Worst_Case': '{:.2f}%'}),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("No stocks found with a Win Rate ≥ 70% for the selected period.")
 
-        # --- TABLE 3: TOP 5 SECTORS ---
-        st.markdown("### 🏢 Table 3: Top 5 Sectors by Seasonal Performance")
-        
-        sector_stats = screener_df.groupby('Sector').agg({
-            'Win_Rate': 'mean',
-            'Median': 'mean',
-            'Reliability': 'mean',
-            'Ticker': 'count'
-        }).reset_index()
-        
-        # Find top performers per sector based on reliability
-        def get_top_performers(sector):
-            t_performers = screener_df[screener_df['Sector'] == sector].sort_values(by=['Reliability', 'Median'], ascending=False).head(3)['Ticker'].tolist()
-            return ", ".join(t_performers)
-        
-        sector_stats['Top Performers'] = sector_stats['Sector'].apply(get_top_performers)
-        sector_stats = sector_stats.sort_values(by=['Reliability', 'Win_Rate'], ascending=False).head(5).copy()
-        sector_stats.insert(0, 'Rank', range(1, 6))
-        
-        disp_sectors = sector_stats.rename(columns={
-            'Win_Rate': 'Sect. Win Rate %',
-            'Median': 'Sect. Median %',
-            'Reliability': 'Sect. Reliability',
-            'Ticker': 'Count'
-        })
-        
-        st.dataframe(
-            disp_sectors.style.background_gradient(subset=['Sect. Win Rate %', 'Sect. Median %'], cmap='Blues')
-            .format({'Sect. Win Rate %': '{:.1f}', 'Sect. Median %': '{:.2f}', 'Sect. Reliability': '{:.1f}'}),
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Download insights
-        st.markdown("---")
-        csv_screener = screener_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download Full Screener Report (CSV)",
-            data=csv_screener,
-            file_name="nifty_seasonal_screener.csv",
-            mime="text/csv",
-        )
+            # --- TABLE 3: TOP 5 SECTORS ---
+            st.markdown("### 🏢 Table 3: Top 5 Sectors by Seasonal Performance")
+            
+            sector_stats = screener_df.groupby('Sector').agg({
+                'Win_Rate': 'mean',
+                'Median': 'mean',
+                'Reliability': 'mean',
+                'Ticker': 'count'
+            }).reset_index()
+            
+            # Find top performers per sector based on reliability
+            def get_top_performers(sector):
+                t_performers = screener_df[screener_df['Sector'] == sector].sort_values(by=['Reliability', 'Median'], ascending=False).head(3)['Ticker'].tolist()
+                return ", ".join(t_performers)
+            
+            sector_stats['Top Performers'] = sector_stats['Sector'].apply(get_top_performers)
+            sector_stats = sector_stats.sort_values(by=['Reliability', 'Win_Rate'], ascending=False).head(5).copy()
+            sector_stats.insert(0, 'Rank', range(1, 6))
+            
+            disp_sectors = sector_stats.rename(columns={
+                'Win_Rate': 'Sect. Win Rate %',
+                'Median': 'Sect. Median %',
+                'Reliability': 'Sect. Reliability',
+                'Ticker': 'Count'
+            })
+            
+            st.dataframe(
+                disp_sectors.style.background_gradient(subset=['Sect. Win Rate %', 'Sect. Median %'], cmap='Blues')
+                .format({'Sect. Win Rate %': '{:.1f}', 'Sect. Median %': '{:.2f}', 'Sect. Reliability': '{:.1f}'}),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Download insights
+            st.markdown("---")
+            csv_screener = screener_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Full Screener Report (CSV)",
+                data=csv_screener,
+                file_name="nifty_seasonal_screener.csv",
+                mime="text/csv",
+            )
     else:
         st.info("Click the button above to start the multi-year seasonal analysis for Nifty 50 stocks.")
