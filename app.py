@@ -77,34 +77,36 @@ if data_source is not None:
     st.dataframe(df.head(10), use_container_width=True)
     
     if x_col in df.columns and y_col in df.columns:
-        # Robust data cleaning
+        # Robust data cleaning using Pandas
         temp_df = df[[x_col, y_col]].copy()
         
         # Handle X column (potentially dates)
         is_x_date = False
         try:
             # Try to convert to datetime
-            temp_df[x_col] = pd.to_datetime(temp_df[x_col])
+            temp_df[x_col] = pd.to_datetime(temp_df[x_col], errors='raise')
             is_x_date = True
             # Convert to ordinal for regression (numeric)
             base_date = temp_df[x_col].min()
-            X_numeric = (temp_df[x_col] - base_date).dt.days.values
+            X_series = (temp_df[x_col] - base_date).dt.days
         except:
             # Fallback to standard numeric conversion
-            temp_df[x_col] = pd.to_numeric(temp_df[x_col], errors='coerce')
-            X_numeric = temp_df[x_col].values
+            is_x_date = False
+            X_series = pd.to_numeric(temp_df[x_col], errors='coerce')
             
         # Handle Y column (must be numeric)
-        temp_df[y_col] = pd.to_numeric(temp_df[y_col], errors='coerce')
-        y_numeric = temp_df[y_col].values
+        y_series = pd.to_numeric(temp_df[y_col], errors='coerce')
         
-        # Filter NaN values
-        mask = ~np.isnan(X_numeric) & ~np.isnan(y_numeric)
-        X = X_numeric[mask]
-        y = y_numeric[mask]
+        # Combined cleaner DataFrame
+        clean_df = pd.DataFrame({'x_val': X_series, 'y_val': y_series})
+        clean_df = clean_df.dropna()
+        
+        # Explicitly ensure they are floats for the engine
+        X = clean_df['x_val'].astype(float).values
+        y = clean_df['y_val'].astype(float).values
         
         if len(X) < 2:
-            st.error("Error: Not enough valid numeric data points for regression.")
+            st.error("Error: Not enough valid numeric data points for regression after cleaning. Check your columns.")
             st.stop()
             
         # Initialize Engine
