@@ -103,13 +103,19 @@ with st.sidebar:
     auto_degree = st.checkbox("Auto-optimize Polynomial Degree", value=True)
     manual_degree = st.slider("Manual Degree", 1, 10, 2, disabled=auto_degree)
     
+    # NEW: Advanced stability controls
+    st.markdown("---")
+    st.markdown("### Stability & Financial Mode")
+    use_log = st.checkbox("Financial Mode (Log-Regression)", value=True, help="Fits the log of the price. Ensures predictions are always positive and handles growth curves better.")
+    alpha = st.slider("Regularization (Ridge Alpha)", 0.0, 10.0, 1.0, step=0.1, help="Higher values prevent wild oscillations in high-degree polynomials.")
+
     st.markdown("---")
     st.markdown("### Columns Mapping")
     x_col = st.text_input("X Axis Column", x_col_default)
     y_col = st.text_input("Y Axis Column", y_col_default)
 
 @st.cache_data
-def process_data(df, x_col, y_col):
+def process_data(df, x_col, y_col, use_log=False):
     # Robust data cleaning using Pandas
     temp_df = df[[x_col, y_col]].copy()
     
@@ -135,11 +141,18 @@ def process_data(df, x_col, y_col):
     clean_df = pd.DataFrame({'x_val': X_series, 'y_val': y_series})
     clean_df = clean_df.dropna()
     
+    # Financial Mode: Log Transformation
+    # Log-transforming Y makes the relationship more linear for growth and ensures exp(y) is always > 0
+    if use_log:
+        # Filter out non-positive values for log
+        clean_df = clean_df[clean_df['y_val'] > 0]
+        clean_df['y_val'] = np.log(clean_df['y_val'])
+    
     return clean_df, is_x_date, base_date
 
 @st.cache_resource
-def train_model(X, y, auto_degree, manual_degree):
-    engine = RegressionEngine(degree=manual_degree if not auto_degree else 2)
+def train_model(X, y, auto_degree, manual_degree, alpha=1.0):
+    engine = RegressionEngine(degree=manual_degree if not auto_degree else 2, alpha=alpha)
     if auto_degree:
         engine.find_best_degree(X, y)
     engine.fit(X, y)
@@ -152,22 +165,30 @@ if df is not None:
     
     if x_col in df.columns and y_col in df.columns:
         with st.spinner("Processing data..."):
-            clean_df, is_x_date, base_date = process_data(df, x_col, y_col)
+            clean_df, is_x_date, base_date = process_data(df, x_col, y_col, use_log=use_log)
         
         # Explicitly ensure they are floats for the engine
         X = clean_df['x_val'].astype(float).values
         y = clean_df['y_val'].astype(float).values
         
         if len(X) < 2:
-            st.error("Error: Not enough valid numeric data points for regression after cleaning.")
+            st.error("Error: Not enough valid numeric data points for regression after cleaning. (Note: Log mode ignores negative values)")
             st.stop()
             
         # Initialize and train Engine (Cached)
         with st.spinner("Training Model..."):
-            engine = train_model(X, y, auto_degree, manual_degree)
+            engine = train_model(X, y, auto_degree, manual_degree, alpha=alpha)
         
-        y_pred = engine.predict(X)
-        stats = StatsEngine.compute_all(y, y_pred, X.reshape(-1, 1))
+        y_pred_numeric = engine.predict(X)
+        
+        # Inverse transform for metrics if in log mode
+        y_actual_display = y
+        y_pred_display = y_pred_numeric
+        if use_log:
+            y_actual_display = np.exp(y)
+            y_pred_display = np.exp(y_pred_numeric)
+            
+        stats = StatsEngine.compute_all(y_actual_display, y_pred_display, X.reshape(-1, 1))
         
         # Metrics Row
         col1, col2, col3, col4 = st.columns(4)
@@ -181,8 +202,16 @@ if df is not None:
         
         # Create regression line data
         min_x, max_x = float(np.min(X)), float(np.max(X))
-        line_x, line_y = engine.get_line_data(min_x, max_x)
+        line_x, line_y_numeric = engine.get_line_data(min_x, max_x)
         
+        # Inverse transform for line if in log mode
+        line_y = line_y_numeric
+        if use_log:
+            line_y = np.exp(line_y_numeric).tolist()
+        else:
+            # Clip negative values for non-log mode to keep charts pretty
+            line_y = np.maximum(0, line_y).tolist()
+
         # Mapping numeric X back to dates for visualization if needed
         X_plot = X
         line_x_plot = line_x
@@ -194,7 +223,7 @@ if df is not None:
         
         # Scatter for original data
         fig.add_trace(go.Scatter(
-            x=X_plot, y=y, 
+            x=X_plot, y=y_actual_display, 
             mode='markers', 
             name='Original Data',
             marker=dict(color='#00bcd4', size=8, opacity=0.6)
@@ -228,21 +257,23 @@ if df is not None:
         with predict_col1:
             if is_x_date:
                 # Use date input for prediction
-                last_date = base_date + pd.Timedelta(days=int(max_x))
-                target_date = st.date_input("Select Date for Prediction", value=last_date + pd.Timedelta(days=30))
+                last_date = base_date + pd.Timedelta(days=int(X.max()))
+                target_date = st.date_input("Select Date for Prediction", value=last_date + pd.Timedelta(days=365))
                 input_val = (pd.to_datetime(target_date) - base_date).days
             else:
                 input_val = st.number_input(f"Enter {x_col} to predict", value=float(max_x + (max_x - min_x) * 0.1))
             
             if st.button("Predict Future Value"):
-                pred = engine.predict(np.array([[input_val]]))[0]
+                pred_numeric = engine.predict(np.array([[input_val]]))[0]
+                pred = np.exp(pred_numeric) if use_log else max(0, pred_numeric)
+                
                 if is_x_date:
                     st.success(f"Predicted **{y_col}** for {target_date}: `{pred:.4f}`")
                 else:
                     st.success(f"Predicted **{y_col}** for {input_val}: `{pred:.4f}`")
         
         with predict_col2:
-            st.info("Input a value to see the model's projection beyond the current dataset range. This use polynomial logic to estimate values.")
+            st.info("The model uses Ridge Regression for stability. 'Financial Mode' ensures stock prices remain positive during extrapolation.")
 
     else:
         st.warning(f"Waiting for valid columns: '{x_col}' and '{y_col}'. You can adjust them in the sidebar.")

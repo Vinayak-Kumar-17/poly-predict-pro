@@ -1,14 +1,14 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression, Ridge
 
 class RegressionEngine:
-    def __init__(self, degree=2):
+    def __init__(self, degree=2, alpha=1.0):
         self.degree = degree
-        self.model = LinearRegression()
+        self.alpha = alpha  # Regularization strength
+        # Use Ridge for degree > 1 to prevent wild oscillations
+        self.model = Ridge(alpha=alpha) if degree > 1 else LinearRegression()
         self.poly_features = PolynomialFeatures(degree=degree)
         self.is_fitted = False
 
@@ -16,14 +16,18 @@ class RegressionEngine:
         best_degree = 1
         best_r2 = -float('inf')
         
-        for d in range(1, max_degree + 1):
+        # Ensure we have enough points for max_degree
+        effective_max = min(max_degree, len(X) - 1)
+        
+        for d in range(1, effective_max + 1):
             poly = PolynomialFeatures(degree=d)
             X_poly = poly.fit_transform(X.reshape(-1, 1))
             
             # Simple train-test split to avoid overfitting in selection
             X_train, X_test, y_train, y_test = train_test_split(X_poly, y, test_size=0.2, random_state=42)
             
-            model = LinearRegression()
+            # Use Ridge for evaluation to see how it performs with regularization
+            model = Ridge(alpha=self.alpha) if d > 1 else LinearRegression()
             model.fit(X_train, y_train)
             score = model.score(X_test, y_test)
             
@@ -33,6 +37,7 @@ class RegressionEngine:
         
         self.degree = best_degree
         self.poly_features = PolynomialFeatures(degree=best_degree)
+        self.model = Ridge(alpha=self.alpha) if best_degree > 1 else LinearRegression()
         return best_degree
 
     def fit(self, X, y):
@@ -44,7 +49,8 @@ class RegressionEngine:
         if not self.is_fitted:
             raise Exception("Model not fitted yet")
         X_poly = self.poly_features.transform(X.reshape(-1, 1))
-        return self.model.predict(X_poly)
+        preds = self.model.predict(X_poly)
+        return preds
 
     def get_line_data(self, min_x, max_x, points=100):
         X_line = np.linspace(min_x, max_x, points).reshape(-1, 1)
