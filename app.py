@@ -177,16 +177,40 @@ def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
             liq_score = min(5, max(1, int(np.log10(avg_vol/10000)))) if avg_vol > 0 else 1
             expected_ret = (median_roi * 0.7) + (mean_roi * 0.3)
             
-            # Reliability Score
+            # Reliability Score Refining (Point-Based System)
             score = 0
-            if win_rate >= 70: score += 2
-            elif win_rate >= 55: score += 1
-            if expected_ret > 2: score += 1
             
+            # 1. Win Rate Points (0-3 pts)
+            if win_rate >= 80: score += 3
+            elif win_rate >= 70: score += 2
+            elif win_rate >= 60: score += 1
+            else: score -= 1  # Penalty for low win rate consistency
+            
+            # 2. Expected Return Points (0-3 pts)
+            if expected_ret > 15: score += 3
+            elif expected_ret > 10: score += 2
+            elif expected_ret > 5: score += 1
+            elif expected_ret < 0: score -= 2  # Penalty for negative expected outcome
+            
+            # 3. Sample Size Maturity Penalty
+            if total_years < 5:
+                score -= 1
+            
+            # 4. Risk Profile Adjustments
             if risk_profile == "Conservative":
-                if worst_case < -15: score = max(0, score - 2)
+                # Heavily penalize downside
+                if worst_case < -20: score -= 3
+                elif worst_case < -15: score -= 2
+                elif worst_case < -10: score -= 1
+                if worst_case > -5: score += 1 # Bonus for safety
             elif risk_profile == "Aggressive":
-                if expected_ret > 8: score += 1
+                # Reward high outliers, ignore risk
+                if expected_ret > 20: score += 2
+                elif expected_ret > 15: score += 1
+            
+            # Convert point total to clamped index (1-5 stars)
+            # Starting point of 3 is average, adjusted by points
+            final_stars = max(1, min(5, 3 + score // 2)) 
             
             results.append({
                 'Ticker': ticker,
@@ -194,9 +218,9 @@ def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
                 'Expected_R': expected_ret,
                 'Median': median_roi,
                 'Mean': mean_roi,
-                'Win_Count': f"{wins}/{total_years}",
+                'Win_Count': f"{wins}/{total_years} ({win_rate:.0f}%)",
                 'Win_Rate': win_rate,
-                'Reliability': min(5, score),
+                'Reliability': final_stars,
                 'Worst_Case': worst_case,
                 'Best_Case': best_case,
                 'Recency_Alert': recency_warning,
@@ -812,12 +836,13 @@ with screener_tab:
                 top_win['Reliability_Stars'] = top_win['Reliability'].apply(lambda x: "⭐" * int(x) if x >= 1 else "⚠️")
                 
                 st.dataframe(
-                    top_win[['Rank', 'Ticker', 'Sector', 'Win_Count', 'Expected_R', 'Reliability_Stars', 'Worst_Case']]
+                    top_win[['Rank', 'Ticker', 'Sector', 'Win_Count', 'Win_Rate', 'Expected_R', 'Reliability_Stars', 'Worst_Case']]
                     .style.background_gradient(subset=['Win_Rate', 'Expected_R'], cmap='Greens')
-                    .format({'Expected_R': '{:.2f}%', 'Worst_Case': '{:.2f}%'}),
+                    .format({'Win_Rate': '{:.0f}%', 'Expected_R': '{:.2f}%', 'Worst_Case': '{:.2f}%'}),
                     use_container_width=True,
                     hide_index=True
                 )
+                st.caption("**Worst Case** = Lowest ROI recorded in any single year for the selected period.")
             else:
                 st.info("No stocks found with a Win Rate ≥ 70% for the selected period.")
 
