@@ -82,14 +82,13 @@ st.title("🚀 PolyPredict Pro")
 st.markdown("---")
 
 @st.cache_data
-def run_stock_screener(month_anchor):
+def run_stock_screener(month_list):
     # Fetch 10 years of data for all Nifty 50
     tickers = list(NIFTY_50_TICKERS.keys())
+    # Use interval="1mo" for speed
     data = yf.download(tickers, period="10y", interval="1mo", group_by='ticker')
     
-    # Analyze next 3 months
-    current_month = datetime.now().month
-    upcoming_months = [(current_month + i - 1) % 12 + 1 for i in range(1, 4)]
+    upcoming_months = month_list
     
     results = []
     
@@ -666,19 +665,37 @@ with seasonality_tab:
 with screener_tab:
     st.subheader("🔍 Smart Stock Screener (Nifty 50)")
     st.markdown("""
-    This screener identifies stocks with the strongest **historical seasonal patterns** for the **upcoming 3 months**. 
+    This screener identifies stocks with the strongest **historical seasonal patterns** for the **selected months**. 
     It ranks them using a composite **Smart Score** that balances returns, consistency, and risk.
     """)
     
+    # Month Selection UI
+    current_month_idx = datetime.now().month
+    month_options = list(calendar.month_name)[1:]
+    
+    # Default to next 3 months
+    default_months = [month_options[(current_month_idx + i - 1) % 12] for i in range(1, 4)]
+    
+    selected_month_names = st.multiselect(
+        "Select Months to Analyze",
+        options=month_options,
+        default=default_months,
+        help="The screener will calculate performance based on the historical data for these specific months."
+    )
+    
+    selected_month_indices = [month_options.index(m) + 1 for m in selected_month_names]
+    
     if st.button("🚀 Run Seasonal Screener (Analyzes 10Y Data)"):
-        with st.spinner("Analyzing Nifty 50 historical patterns... This may take a minute."):
-            screener_df, months_idx = run_stock_screener(datetime.now().month)
-            
-            if screener_df.empty:
-                st.error("Could not fetch data for stocks. Please check your internet connection.")
-            else:
-                months_names = [calendar.month_name[m] for m in months_idx]
-                st.success(f"Analysis complete for: **{', '.join(months_names)}**")
+        if not selected_month_indices:
+            st.error("Please select at least one month to analyze.")
+        else:
+            with st.spinner("Analyzing Nifty 50 historical patterns... This may take a minute."):
+                screener_df, months_idx = run_stock_screener(selected_month_indices)
+                
+                if screener_df.empty:
+                    st.error("Could not fetch data for stocks. Please check your internet connection or try different months.")
+                else:
+                    st.success(f"Analysis complete for: **{', '.join(selected_month_names)}**")
                 
                 # --- TABLE 1: TOP 10 BY SMART SCORE ---
                 st.markdown("### 🏆 Table 1: Top 10 Stocks by Smart Score")
