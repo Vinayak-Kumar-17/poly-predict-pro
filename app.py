@@ -197,6 +197,9 @@ def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
         except:
             continue
             
+    if not results:
+        return pd.DataFrame()
+            
     return pd.DataFrame(results).sort_values(by='Expected_R', ascending=False)
 
 @st.cache_data
