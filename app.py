@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from engine import RegressionEngine, StatsEngine
 import io
+import yfinance as yf
 
 # Page Config
 st.set_page_config(
@@ -52,19 +53,60 @@ st.markdown("""
 st.title("🚀 PolyPredict Pro")
 st.markdown("---")
 
+@st.cache_data
+def fetch_stock_data(ticker, period):
+    try:
+        data = yf.download(ticker, period=period)
+        if data.empty:
+            return None
+        # Handle multi-level columns if any, and simplify
+        df = data[['Close']].copy()
+        df = df.reset_index()
+        df.columns = ['Date', 'Close']
+        return df
+    except Exception as e:
+        st.error(f"Error fetching stock data: {e}")
+        return None
+
 # Sidebar for controls
 with st.sidebar:
     st.header("🛠 Configuration")
-    upload_file = st.file_uploader("Upload CSV Dataset", type=["csv"])
     
+    data_mode = st.radio("Select Data Source", ["Upload CSV", "Stock Market", "Sample Data"], index=1)
+    
+    df = None
+    x_col_default = "x"
+    y_col_default = "y"
+    
+    if data_mode == "Upload CSV":
+        upload_file = st.file_uploader("Upload CSV Dataset", type=["csv"])
+        if upload_file:
+            df = pd.read_csv(upload_file)
+    elif data_mode == "Stock Market":
+        ticker = st.text_input("Ticker Symbol (e.g. ITC.NS, AAPL, RELIANCE.NS)", "ITC.NS")
+        period = st.selectbox("Market History Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"], index=4)
+        with st.spinner("Fetching market data..."):
+            df = fetch_stock_data(ticker, period)
+        x_col_default = "Date"
+        y_col_default = "Close"
+    else:
+        # Sample Data Mode
+        if 'sample_data' not in st.session_state:
+            sample_x = np.linspace(0, 10, 50)
+            sample_y = 2 * (sample_x**2) - 5 * sample_x + 10 + np.random.normal(0, 10, 50)
+            st.session_state['sample_data'] = pd.DataFrame({'x': sample_x, 'y': sample_y})
+        df = st.session_state['sample_data']
+        x_col_default = "x"
+        y_col_default = "y"
+
     st.markdown("### Model Parameters")
     auto_degree = st.checkbox("Auto-optimize Polynomial Degree", value=True)
     manual_degree = st.slider("Manual Degree", 1, 10, 2, disabled=auto_degree)
     
     st.markdown("---")
     st.markdown("### Columns Mapping")
-    x_col = st.text_input("X Axis Column", "x")
-    y_col = st.text_input("Y Axis Column", "y")
+    x_col = st.text_input("X Axis Column", x_col_default)
+    y_col = st.text_input("Y Axis Column", y_col_default)
 
 @st.cache_data
 def process_data(df, x_col, y_col):
@@ -104,20 +146,7 @@ def train_model(X, y, auto_degree, manual_degree):
     return engine
 
 # Main Logic
-data_source = upload_file
-if 'sample_data' in st.session_state and upload_file is None:
-    data_source = io.StringIO(st.session_state['sample_data'])
-
-if data_source is not None:
-    # Use a cached read to avoid re-reading the CSV
-    @st.cache_data
-    def get_df(source):
-        if isinstance(source, io.StringIO):
-            source.seek(0)
-        return pd.read_csv(source)
-    
-    df = get_df(data_source)
-    
+if df is not None:
     st.subheader("📊 Data Preview")
     st.dataframe(df.head(10), use_container_width=True)
     
@@ -216,35 +245,6 @@ if data_source is not None:
             st.info("Input a value to see the model's projection beyond the current dataset range. This use polynomial logic to estimate values.")
 
     else:
-        st.error(f"Error: Columns '{x_col}' or '{y_col}' not found in the dataset.")
+        st.warning(f"Waiting for valid columns: '{x_col}' and '{y_col}'. You can adjust them in the sidebar.")
 else:
-    st.info("👋 Welcome! Please upload a CSV file to get started.")
-    st.markdown("""
-    ### Sample Data Format
-    Your CSV should have at least two numerical columns. For example:
-    | x | y |
-    |---|---|
-    | 1 | 2.1 |
-    | 2 | 3.9 |
-    | 3 | 9.2 |
-    """)
-    
-    # Generate random sample data button
-    if st.button("Generate & Use Sample Data"):
-        sample_x = np.linspace(0, 10, 50)
-        sample_y = 2 * (sample_x**2) - 5 * sample_x + 10 + np.random.normal(0, 10, 50)
-        sample_df = pd.DataFrame({'x': sample_x, 'y': sample_y})
-        
-        # Save to buffer
-        csv_buffer = io.StringIO()
-        sample_df.to_csv(csv_buffer, index=False)
-        st.session_state['sample_data'] = csv_buffer.getvalue()
-        st.rerun()
-
-# Handle sample data if generated
-if 'sample_data' in st.session_state:
-    df = pd.read_csv(io.StringIO(st.session_state['sample_data']))
-    # Re-run logic for sample data...
-    # (Actually it's better to just set use the buffer in the uploader-like logic)
-    # For now, if sample_data is in state, we use it as if it was uploaded
-    # ... logic above will handle it if we mock the upload_file
+    st.info("👋 Welcome! Please select a data source in the sidebar to get started.")
