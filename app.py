@@ -84,56 +84,84 @@ st.markdown("---")
 @st.cache_data
 def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
     """
-    Investor-Grade Screener:
-    1. Syncs with sidebar history period.
-    2. Calculates a single ROI trade for the continuous block (Feb-Apr) per year.
-    3. Handles recency vs historical comparison.
+    Investor-Grade Screener v3.2:
+    - Uses monthly data for speed and reliability.
+    - Robust ROI: (End Close / Last Available Close before Start)
+    - Flexible 3-year minimum with warning.
     """
     tickers = list(NIFTY_50_TICKERS.keys())
-    # Use daily data for high-precision trade start/end
-    data = yf.download(tickers, period=history_period, interval="1d", group_by='ticker')
     
+    # Use monthly data for stability
+    try:
+        data = yf.download(tickers, period=history_period, interval="1mo", group_by='ticker', progress=False)
+    except Exception as e:
+        return pd.DataFrame(), [("All Tickers", f"Data fetch failed: {str(e)}")]
+
     if data.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), [("All Tickers", "No data returned from Yahoo Finance")]
         
     results = []
+    failed_tickers = []
+    
+    # We need a progress holder in the UI, but we can't easily put it inside @st.cache_data 
+    # and have it behave well on cache hits. We'll handle progress in the UI calling loop if possible,
+    # or just keep it simple here.
+    
+    start_month = min(month_list)
+    end_month = max(month_list)
     
     for ticker in tickers:
         try:
-            # Get daily prices for this ticker
-            if isinstance(data[ticker], pd.DataFrame):
-                t_data = data[ticker].dropna(subset=['Close'])
-            else:
+            if ticker not in data.columns.levels[0]:
+                failed_tickers.append((ticker, "Ticker missing in downloaded data"))
                 continue
                 
-            if t_data.empty: continue
+            t_data = data[ticker].dropna(subset=['Close'])
+            if t_data.empty:
+                failed_tickers.append((ticker, "No price data available"))
+                continue
             
-            # Group by year for Whole-Period ROI
-            years = t_data.index.year.unique()
+            years = sorted(t_data.index.year.unique())
             annual_trades = []
             
             for yr in years:
                 yr_data = t_data[t_data.index.year == yr]
-                # Filter for selected months in this year
-                block_data = yr_data[yr_data.index.month.isin(month_list)]
                 
-                if block_data.empty: continue
+                # Robust ROI logic:
+                # 1. End Close: Closing price of the end_month in this year
+                end_price_match = yr_data[yr_data.index.month == end_month]
+                if end_price_match.empty: continue
+                end_price = end_price_match['Close'].iloc[-1]
                 
-                # We need a continuous block. If months are 2,3,4, we want start of 2 to end of 4.
-                # Find start price (first day of first selected month in this year)
-                # Find end price (last day of last selected month in this year)
-                start_price = block_data['Close'].iloc[0]
-                end_price = block_data['Close'].iloc[-1]
+                # 2. Start Price: Closing price of the month BEFORE start_month
+                # If start_month is Jan (1), we need Dec of yr-1
+                if start_month == 1:
+                    lookback_data = t_data[(t_data.index.year == yr-1) & (t_data.index.month == 12)]
+                else:
+                    lookback_data = yr_data[yr_data.index.month == (start_month - 1)]
+                
+                # Fallback: Find the last available close before the actual start of the block in this year
+                if lookback_data.empty:
+                    lookback_data = t_data[t_data.index < pd.Timestamp(year=yr, month=start_month, day=1)]
+                
+                if lookback_data.empty: continue
+                start_price = lookback_data['Close'].iloc[-1]
+                
                 roi = ((end_price / start_price) - 1) * 100
+                
+                # Volume - average during the block
+                block_vol = yr_data[yr_data.index.month.isin(month_list)]['Volume'].mean() if 'Volume' in yr_data else 0
                 
                 annual_trades.append({
                     'Year': yr,
                     'ROI': roi,
                     'Win': 1 if roi > 0 else 0,
-                    'Volume': block_data['Volume'].mean() if 'Volume' in block_data else 0
+                    'Volume': block_vol
                 })
             
-            if len(annual_trades) < 3: continue
+            if len(annual_trades) < 3:
+                failed_tickers.append((ticker, f"Insufficient data: only {len(annual_trades)} full years found"))
+                continue
             
             df_trades = pd.DataFrame(annual_trades)
             total_years = len(df_trades)
@@ -145,33 +173,23 @@ def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
             best_case = df_trades['ROI'].max()
             avg_vol = df_trades['Volume'].mean()
             
-            # Recency Check (Last 3 years vs History)
-            if total_years >= 5:
-                recent_df = df_trades.tail(3)
-                recent_win_rate = (recent_df['Win'].sum() / 3) * 100
-                recent_median = recent_df['ROI'].median()
-                recency_warning = recent_median < (median_roi * 0.5) or recent_win_rate < (win_rate * 0.7)
-            else:
-                recency_warning = False
+            # Recency Analysis
+            recent_years = 3 if total_years >= 3 else total_years
+            recent_df = df_trades.tail(recent_years)
+            recent_win_rate = (recent_df['Win'].sum() / recent_years) * 100
+            recent_median = recent_df['ROI'].median()
+            recency_warning = recent_median < (median_roi * 0.5) or recent_win_rate < (win_rate * 0.7)
                 
-            # Staleness Check (No win in last 2 available years)
             stale = df_trades['Win'].tail(2).sum() == 0 if total_years >= 2 else False
-            
-            # Liquidity Score (1-5) based on Nifty average volume
-            # Very rough estimate for demo: > 1M is stable
             liq_score = min(5, max(1, int(np.log10(avg_vol/10000)))) if avg_vol > 0 else 1
-            
-            # Expected Return (User requested logic)
             expected_ret = (median_roi * 0.7) + (mean_roi * 0.3)
             
-            # Reliability Score (Stars) based on Risk Profile
+            # Reliability Score (Stars)
             score = 0
             if win_rate >= 70: score += 2
             elif win_rate >= 55: score += 1
+            if expected_ret > 2: score += 1
             
-            if expected_ret > 2: score += 1 # Base profitability
-            
-            # Penalty for high drawdown in Conservative mode
             if risk_profile == "Conservative":
                 if worst_case < -15: score = max(0, score - 2)
                 if win_rate < 60: score = max(0, score - 1)
@@ -192,15 +210,18 @@ def run_stock_screener(month_list, history_period, risk_profile="Moderate"):
                 'Recency_Alert': recency_warning,
                 'Stale_Alert': stale,
                 'Liquidity': liq_score,
-                'Avg_Volume': avg_vol
+                'Avg_Volume': avg_vol,
+                'Years': total_years
             })
-        except:
+        except Exception as e:
+            failed_tickers.append((ticker, f"Error: {str(e)}"))
             continue
             
     if not results:
-        return pd.DataFrame()
-            
-    return pd.DataFrame(results).sort_values(by='Expected_R', ascending=False)
+        return pd.DataFrame(), failed_tickers
+        
+    final_df = pd.DataFrame(results).sort_values(by='Expected_R', ascending=False)
+    return final_df, failed_tickers
 
 @st.cache_data
 def fetch_multi_stock_data(tickers, period):
@@ -726,6 +747,8 @@ with screener_tab:
         st.session_state.screener_res = None
     if 'screener_months' not in st.session_state:
         st.session_state.screener_months = None
+    if 'screener_failed' not in st.session_state:
+        st.session_state.screener_failed = []
 
     if st.button("🚀 Run Seasonal Screener (Syncs with Sidebar Period)"):
         if not selected_month_indices:
@@ -733,38 +756,49 @@ with screener_tab:
         else:
             period_to_use = period if 'period' in locals() else "10y"
             with st.spinner(f"Analyzing Nifty 50 over {period_to_use}... This may take a minute."):
-                st.session_state.screener_res = run_stock_screener(selected_month_indices, period_to_use, risk_profile)
+                res_df, failed = run_stock_screener(selected_month_indices, period_to_use, risk_profile)
+                st.session_state.screener_res = res_df
+                st.session_state.screener_failed = failed
                 st.session_state.screener_months = selected_month_names
                 
     if st.session_state.screener_res is not None:
         screener_df = st.session_state.screener_res
+        failed_list = st.session_state.screener_failed
         
+        # --- ANALYSIS SUMMARY ---
+        summary_col1, summary_col2 = st.columns(2)
+        with summary_col1:
+            st.success(f"✅ Analyzed {len(screener_df)} stocks for: **{', '.join(st.session_state.screener_months)}**")
+        with summary_col2:
+            if failed_list:
+                with st.expander(f"⚠️ {len(failed_list)} Stocks Excluded (View Reasons)"):
+                    st.table(pd.DataFrame(failed_list, columns=['Ticker', 'Reason']))
+
         if screener_df.empty:
-            st.warning("⚠️ No stocks met the screening criteria for the selected period. This can happen if the historical data fetch fails for most tickers or if the filtering is too strict. Try a different month range or history period.")
+            st.warning("⚠️ No stocks met the screening criteria. Try a different month range or history period.")
         else:
-            st.success(f"Analysis complete for: **{', '.join(st.session_state.screener_months)}**")
-            
             # --- DIVERSIFICATION CHECK ---
             top_10 = screener_df.head(10)
             sector_counts = top_10['Sector'].value_counts()
             most_common_sector = sector_counts.index[0]
-            sector_pct = (sector_counts.iloc[0] / 10) * 100
+            sector_pct = (sector_counts.iloc[0] / len(top_10)) * 100
             
             if sector_pct >= 50:
-                st.warning(f"⚠️ **Diversification Alert**: {sector_pct:.0f}% of your Top 10 stocks are from the **{most_common_sector}** sector. Consider balancing your portfolio.")
+                st.warning(f"⚠️ **Diversification Alert**: {sector_pct:.0f}% of your Top 10 are from **{most_common_sector}**. Consider balancing.")
 
             # --- TABLE 1: TOP 10 BY EXPECTED RETURN ---
             st.markdown("### 🏆 Table 1: Top 10 Stocks by Expected Return & Reliability")
             
             top_reliable = top_10.copy()
-            top_reliable.insert(0, 'Rank', range(1, 11))
+            top_reliable.insert(0, 'Rank', range(1, len(top_reliable) + 1))
             
             # Format columns for display
             top_reliable['Reliability_Stars'] = top_reliable['Reliability'].apply(lambda x: "⭐" * int(x) if x >= 1 else "⚠️")
             top_reliable['Liquidity_Score'] = top_reliable['Liquidity'].apply(lambda x: "💧" * int(x))
             top_reliable['Alerts'] = top_reliable.apply(
                 lambda x: ("📉 Recency" if x['Recency_Alert'] else "") + 
-                          (" | ❄️ Stale" if x['Stale_Alert'] else ""), 
+                          (" | ❄️ Stale" if x['Stale_Alert'] else "") +
+                          (" | 📊 Limited Data" if x['Years'] < 5 else ""), 
                 axis=1
             )
             top_reliable['Alerts'] = top_reliable['Alerts'].apply(lambda x: x.strip(" | ") if x else "✅ Clear")
