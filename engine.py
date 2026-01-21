@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 
 class RegressionEngine:
     def __init__(self, degree=2, alpha=1.0):
