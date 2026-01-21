@@ -74,17 +74,17 @@ def fetch_multi_stock_data(tickers, period):
 
 @st.cache_data
 def calculate_seasonality_stats(price_df, ticker):
-    if price_df is None or ticker not in price_df['Close'].columns if isinstance(price_df['Close'], pd.DataFrame) else ticker != ticker:
-        # Handle single ticker case where Close is a Series
-        if isinstance(price_df['Close'], pd.Series):
-             prices = price_df['Close']
+    if price_df is None:
+        return None, None, None
+        
+    prices = price_df['Close']
+    if isinstance(prices, pd.DataFrame):
+        if ticker in prices.columns:
+            prices = prices[ticker]
         else:
-             prices = price_df['Close'][ticker]
-    else:
-        prices = price_df['Close'][ticker]
+            return None, None, None
 
     # Calculate monthly returns
-    # Resample to month-end and get last price
     monthly_prices = prices.resample('ME').last()
     monthly_returns = monthly_prices.pct_change() * 100
     
@@ -94,19 +94,53 @@ def calculate_seasonality_stats(price_df, ticker):
     df_returns['Month'] = df_returns['Date'].dt.month
     df_returns['Month_Name'] = df_returns['Date'].dt.month_name()
     
+    # Filter out NaNs from return calculation
+    df_returns = df_returns.dropna()
+    
     # Pivot for heatmap
     heatmap_df = df_returns.pivot(index='Year', columns='Month', values='Return')
     heatmap_df.columns = [calendar.month_name[m] for m in heatmap_df.columns]
     
-    # Stats per month
-    month_stats = df_returns.groupby('Month').agg({
-        'Return': ['mean', 'std', 'median', 'count', lambda x: (x > 0).sum()]
-    })
-    month_stats.columns = ['Mean', 'Volatility', 'Median', 'Count', 'Wins']
+    # Advanced Stats per month
+    def get_reliability_score(group):
+        mean = group.mean()
+        median = group.median()
+        win_rate = (group > 0).mean()
+        volatility = group.std()
+        
+        # Reliability logic:
+        # 1. Win Rate must be high (>60% for 5 stars, >50% for 4, etc.)
+        # 2. Volatility should be low relative to mean
+        # 3. Mean and Median should be close (if mean >> median, there's a positive outlier skew)
+        
+        score = 0
+        if win_rate >= 0.65: score += 2
+        elif win_rate >= 0.50: score += 1
+        
+        if volatility < abs(mean) and abs(mean) > 1: score += 1
+        
+        # Skewness check: If mean and median differ by more than 2x or 3%, it's unreliable
+        skew_factor = abs(mean - median)
+        if skew_factor < 1.0: score += 2
+        elif skew_factor < 2.5: score += 1
+        
+        # Max score is 5
+        return min(5, score)
+
+    month_stats = df_returns.groupby('Month')['Return'].agg([
+        'mean', 'median', 'std', 'count', 
+        lambda x: (x > 0).sum()
+    ])
+    month_stats.columns = ['Mean', 'Median', 'Volatility', 'Count', 'Wins']
     month_stats['Win_Rate'] = (month_stats['Wins'] / month_stats['Count']) * 100
+    month_stats['Reliability'] = df_returns.groupby('Month')['Return'].apply(get_reliability_score)
     month_stats['Month_Name'] = [calendar.month_name[m] for m in month_stats.index]
     
-    return heatmap_df, month_stats, df_returns
+    # Outlier detection (Z-score > 2.5)
+    df_returns['Z_Score'] = df_returns.groupby('Month')['Return'].transform(lambda x: (x - x.mean()) / (x.std() if x.std() != 0 else 1))
+    outliers = df_returns[df_returns['Z_Score'].abs() > 2.5]
+    
+    return heatmap_df, month_stats, df_returns, outliers
 
 @st.cache_data
 def process_data(df, x_col, y_col, use_log=False):
@@ -339,7 +373,7 @@ with seasonality_tab:
     if data_mode == "Stock Market" and raw_data is not None:
         st.subheader(f"📅 Seasonality Analysis: {focal_ticker}")
         
-        heatmap_df, month_stats, raw_returns = calculate_seasonality_stats(raw_data, focal_ticker)
+        heatmap_df, month_stats, raw_returns, outliers = calculate_seasonality_stats(raw_data, focal_ticker)
         
         # Win-Rate & Volatility Row
         st.markdown("### 📊 Performance Summary")
@@ -355,11 +389,57 @@ with seasonality_tab:
         m_col3.metric("Worst Month (Avg)", f"{calendar.month_name[worst_month]}", f"{month_stats.loc[worst_month, 'Mean']:.2f}%", delta_color="inverse")
         m_col4.metric("Highest Win-Rate", f"{calendar.month_name[best_winrate]}", f"{month_stats.loc[best_winrate, 'Win_Rate']:.1f}%")
         
-        # Rolling Window Comparison (Recent vs History)
+        # --- RED FLAG DETECTION SYSTEM ---
+        st.markdown("---")
+        st.markdown("#### 🚩 Reliability Insights & Red Flags")
+        
+        flagged_months = month_stats[abs(month_stats['Mean'] - month_stats['Median']) > 2.5]
+        
+        if not flagged_months.empty or not outliers.empty:
+            for idx, row in flagged_months.iterrows():
+                m_name = calendar.month_name[idx]
+                st.warning(f"""
+                **⚠️ Reliability Warning: {m_name}**
+                * **Skew Detected:** Average return is `{row['Mean']:.2f}%` but Median is only `{row['Median']:.2f}%`.
+                * **Reason:** This month's average is likely inflated/deflated by a specific outlier year.
+                * **Recommendation:** Look at Win Rate (**{row['Win_Rate']:.1f}%**) for a truer picture of consistency.
+                """)
+            
+            if not outliers.empty:
+                with st.expander("🔍 View Specific Outliers (Historical Anomalies)"):
+                    st.write("These specific months had returns more than 2.5 standard deviations from the mean:")
+                    st.dataframe(outliers[['Date', 'Return', 'Z_Score']].sort_values(by='Z_Score', ascending=False), use_container_width=True)
+        else:
+            st.success("✅ Seasonal patterns appear statistically consistent. (Low divergence between Mean and Median)")
+
+        # --- OPTION 4: PERFORMANCE BREAKDOWN TABLE ---
+        st.markdown("---")
+        st.markdown("#### 📋 Month-by-Month Reliability Breakdown")
+        
+        breakdown_df = month_stats.copy()
+        breakdown_df['Reliability_Stars'] = breakdown_df['Reliability'].apply(lambda x: "⭐" * int(x) if x > 0 else "⚠️")
+        
+        # Presentation formatting
+        disp_df = breakdown_df[['Month_Name', 'Mean', 'Median', 'Win_Rate', 'Volatility', 'Reliability_Stars']].copy()
+        disp_df.columns = ['Month', 'Avg Return %', 'Median %', 'Win Rate %', 'Volatility %', 'Reliability']
+        
+        st.dataframe(
+            disp_df.style.background_gradient(subset=['Avg Return %'], cmap='RdYlGn')
+            .format({
+                'Avg Return %': '{:.2f}',
+                'Median %': '{:.2f}',
+                'Win Rate %': '{:.1f}',
+                'Volatility %': '{:.2f}'
+            }),
+            use_container_width=True
+        )
+        
+        st.caption("**Legend:** ⭐⭐⭐⭐⭐ = Highly reliable | ⚠️ = Highly Skewed / Low History")
+
+        # Rolling Window Comparison
         st.markdown("---")
         st.markdown("### 🕒 Pattern Evolution (Rolling Windows)")
         
-        # Calculate for 3y if period is longer
         if len(raw_returns['Year'].unique()) > 3:
             recent_3y = raw_returns[raw_returns['Year'] >= raw_returns['Year'].max() - 2]
             r3y_stats = recent_3y.groupby('Month')['Return'].mean()
@@ -413,7 +493,8 @@ with seasonality_tab:
         adv_col1, adv_col2 = st.columns(2)
         
         with adv_col1:
-            st.markdown("#### 📉 Volatility per Month")
+            # Volatility is now a bar chart but we can use our new stats
+            st.markdown("#### 📉 Risk Level (Volatility) per Month")
             fig_vol = px.bar(
                 month_stats.reset_index(),
                 x="Month_Name",
